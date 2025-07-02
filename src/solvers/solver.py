@@ -11,7 +11,7 @@ import random
 from pyDOE import lhs
 import os
 
-class solver():
+class Solver():
     """
     Base class for ODE solvers.
     This class defines the interface for ODE solvers.
@@ -19,7 +19,7 @@ class solver():
     """
     # def __init__(self, func, ini_cond, t_final, num_points, *args, **kwargs):
 
-    def __init__(self, func, *args, **kwargs):
+    def __init__(self, func,interface_func, *args, **kwargs):
 
         """
         Initialize the ODE solver with the function, initial conditions,
@@ -39,6 +39,7 @@ class solver():
         # self.ini_cond = ini_cond
         # self.t_final = t_final
         # self.num_points = num_points
+        self.interface_func = interface_func
         self.args = args
         self.kwargs = kwargs
     
