@@ -7,10 +7,12 @@ from matplotlib.gridspec import GridSpec
 # from scipy.integrate import odeint
 from torchdiffeq import odeint
 import random
-
+from pyDOE import lhs
+import os
+from solver import solver
 #import solver.solver as solver
 
-class GeneralODESolver():
+class ODE_conventional(solver):
     """
     A general-purpose ODE solver wrapper around scipy.integrate.odeint.
     
@@ -88,7 +90,7 @@ t_final    = 10.0     # simulate up to t = 10 seconds
 num_points = 1000     # sample 1000 points between 0 and 10
 
 # Pass the parameters as *args in the same order you unpack inside my_system:
-solver = GeneralODESolver(
+solver = ODE_conventional(
     my_system,
     # ini_cond = ini_cond,
     # t_final = t_final,
@@ -102,6 +104,7 @@ import matplotlib.pyplot as plt
 δ_vals = solution[:, 0]
 ω_vals = solution[:, 1]
 
+print(δ_vals)
 plt.figure(figsize=(8,4))
 plt.subplot(1,2,1)
 plt.plot(t, δ_vals)
