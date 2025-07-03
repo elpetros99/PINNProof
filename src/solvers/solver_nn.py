@@ -3,10 +3,9 @@ import torch
 import torch.nn as nn
 import numpy as np
 import random
+from solvers.solver import Solver
 
-# from solver.solver import Solver
-
-class Solver_NN():
+class Solver_NN(Solver):
     """
     A neural network-based ODE solver with optional training capability.
     This class uses a neural network to approximate the solution of an ODE.
