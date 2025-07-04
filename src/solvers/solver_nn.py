@@ -293,7 +293,75 @@ class Solver_NN(Solver):
 
         return t_array, Y    
         
-        
+    
+    def compute_residuals(self, bounds, num_trajectories, num_points):
+        """
+        Compute residuals dy/dt - f(y, t) using autograd and the known equations which we have inside func.
+
+        Args:
+            bounds: for now, assuming this to be a dictionary with keys 'u', 'v', 't', each mapping to (lower, upper)
+            num_trajectories: int, number of different initial conditions
+            num_points: int, number of time points per trajectory
+
+        Returns:
+            residuals: torch.Tensor of shape (num_trajectories, num_timepoints, 2)
+        """
+        samples = self.generate_samples(bounds, num_trajectories, num_points)  # generate samples function needs to be corrected, use either this class or the other one
+        u0s = samples[:, 0, 0]  # shape: (N,)
+        v0s = samples[:, 1, 0]  # shape: (N,)
+        t_grid = samples[:, 2, :] if samples.shape[1] > 2 else torch.linspace(
+            bounds['t'][0], bounds['t'][1], num_points).repeat(num_trajectories, 1)  # shape: (N, T)
+
+        residuals = []
+
+        for i in range(num_trajectories):
+            u0 = u0s[i]
+            v0 = v0s[i]
+            t = t_grid[i].view(-1, 1)  # (T, 1)
+            t.requires_grad_(True)
+
+            # Input tensor for the network: should be of shape (T, 3)
+            u0_repeat = u0.repeat(num_points, 1) if isinstance(u0, torch.Tensor) else torch.full_like(t, u0)
+            v0_repeat = v0.repeat(num_points, 1) if isinstance(v0, torch.Tensor) else torch.full_like(t, v0)
+            inp = torch.cat([u0_repeat, v0_repeat, t], dim=1)  # (T, 3)
+
+            # Passing through and predicting using the NN
+            self.model.eval()
+            out = self.model(inp)  # should be having shape of (T, 2)
+
+            u_pred = u0 + out[:, 0] * t.squeeze()
+            v_pred = v0 + out[:, 1] * t.squeeze()
+
+            # Stack to get y_pred = [u(t), v(t)]
+            y_pred = torch.stack([u_pred, v_pred], dim=1)  # (T, 2)
+
+            # Computing the dy/dt via autograd
+            du_dt = torch.autograd.grad(
+                u_pred, t,
+                grad_outputs=torch.ones_like(u_pred),
+                create_graph=True,
+                retain_graph=True
+            )[0]
+
+            dv_dt = torch.autograd.grad(
+                v_pred, t,
+                grad_outputs=torch.ones_like(v_pred),
+                create_graph=True,
+                retain_graph=True
+            )[0]
+
+            dy_dt = torch.stack([du_dt.squeeze(), dv_dt.squeeze()], dim=1)  # (T, 2)
+
+            # Compute true RHS using self.func, func should be passed appropriately
+            f = self.func(y_pred, t)  # (T, 2)
+
+            # Residual: dy/dt - f(y, t)
+            res = dy_dt - f  # (T, 2)
+            residuals.append(res)
+
+        return torch.stack(residuals, dim=0)  # shape should be of (N, T, 2)
+
+
 class Normalization_strat(nn.Module):
     def __init__(self, tensor_range):
         super().__init__()

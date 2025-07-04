@@ -1,13 +1,3 @@
-<<<<<<< HEAD
-=======
-# -*- coding: utf-8 -*-
-A"""
-Created on Fri Jun 13 14:49:17 2025
-
-@author: INDRAJIT
-"""
-
->>>>>>> master
 import torch 
 import torch.nn as nn 
 import utils
@@ -21,10 +11,11 @@ class verifier(nn.Module):
     verify the solution of solver1 against solver2
     find the worst case error between the two solutions
     """
-    def __init__(self, solver1, solver2):
+    def __init__(self, solver1, solver2, bounds):
         super(verifier, self).__init__()
         self.solver1 = solver1
         self.solver2 = solver2
+        self.var_bounds = bounds
 
     def forward(self, *args, **kwargs):
         """
@@ -35,12 +26,44 @@ class verifier(nn.Module):
         Returns:
             A tensor representing the verification result (e.g., error).
         """
-        raise NotImplementedError("Subclasses must implement this method.")
+        # solver1 and solver2 must have some flag variable (eg: boolean contains_grad) to denote whether they have gradients or not, depending on this the lipschitz will be computed
+        if self.solver1.contains_grad:
+            L1 = self.lipschitz_method_grads(self.solver1, self.bounds, n_samples=1000)# compute lipschitz
+        else:
+            L1 = self.lipschitz_method(self.solver1, self.bounds, n_samples=1000)
+
+        if self.solver2.contains_grad:
+            L2 = self.lipschitz_method_grads(self.solver2, self.bounds, n_samples=1000)# compute lipschitz
+        else:
+            L2 = self.lipschitz_method(self.solver2, self.bounds, n_samples=1000)
+
+        # convert bounds from dictionary to tensors
+        x_lower = torch.tensor([
+            self.bounds['u'][0],
+            self.bounds['v'][0],
+            self.bounds['t'][0]
+        ], dtype=torch.float32).unsqueeze(0)  # shape: (1, 3)
+        x_upper = torch.tensor([
+            self.bounds['u'][1],
+            self.bounds['v'][1],
+            self.bounds['t'][1]
+        ], dtype=torch.float32).unsqueeze(0)  # shape: (1, 3)
+
+        # Evaluating both solvers at x_lower
+        y1 = self.solver1(x_lower)  # shape: (1, 2)
+        y2 = self.solver2(x_lower)  # shape: (1, 2)
+
+        # Norm of the initial output difference
+        initial_error = torch.norm(y1 - y2, p=2)  # L2 norm
+        # Input difference norm
+        input_range = torch.norm(x_upper - x_lower, p=2)
+
+        # Total error bound according to the lipschitz expressoion
+        max_error_bound = initial_error + (L1 + L2) * input_range
+
+        return max_error_bound
+        #raise NotImplementedError("Subclasses must implement this method.")
     
-<<<<<<< HEAD
-    def lipschitz_method(self):
-        return
-=======
     def lipschitz_method_grads(self, solver, bounds, n_samples=1000):
         # Generate samples [u0, v0, t]
         samples = generate_samples(bounds, n_samples, method='uniform')  # shape (n_samples, 3)
@@ -76,69 +99,68 @@ class verifier(nn.Module):
         
         return max_norm
     
-    def lipschitz_method(self, bounds, solver_type='odeint', n_samples=1000, eps=1e-5, model=None):
+    def lipschitz_method(self, bounds, n_samples=1000, eps=1e-5, model=None):
         # Generate samples [u0, v0, t]
         samples = generate_samples(bounds, n_samples, method='uniform')
         max_norm = 0.0
-        if solver_type == 'odeint':
-            for sample in samples:
-                u0, v0, t = sample
-                # Evaluate solver at original point (use n=2 for start and end points only)
-                solver = Solver(ini_cond=[u0, v0], t_final=t, num_points=2, P_gen=power_gen, D1=D1, B12_V1_V2=B12_V1_V2, m1=m1)
+        
+        for sample in samples:
+            u0, v0, t = sample
+            # Evaluate solver at original point (use n=2 for start and end points only)
+            solver = Solver(ini_cond=[u0, v0], t_final=t, num_points=2, P_gen=power_gen, D1=D1, B12_V1_V2=B12_V1_V2, m1=m1)
+            t_test, delta_values, omega_values = solver.solve_system()
+            #traj = solver.solve_system(u0, v0, t, n=2)
+            F_orig = np.array([delta_values[-1], omega_values[-1]])  # State at t
+            jacobian = np.zeros((2, 3))  # 2 outputs, 3 inputs
+            for i in range(3):  # Perturb each input dimension
+                sample_perturbed = sample.copy()
+                sample_perturbed[i] += eps
+                u, v, t_ = sample_perturbed
+                # Evaluate solver at perturbed point
+                solver = Solver(ini_cond=[u, v], t_final=t_, num_points=2, P_gen=power_gen, D1=D1, B12_V1_V2=B12_V1_V2, m1=m1)
                 t_test, delta_values, omega_values = solver.solve_system()
-                #traj = solver.solve_system(u0, v0, t, n=2)
-                F_orig = np.array([delta_values[-1], omega_values[-1]])  # State at t
-                jacobian = np.zeros((2, 3))  # 2 outputs, 3 inputs
-                for i in range(3):  # Perturb each input dimension
-                    sample_perturbed = sample.copy()
-                    sample_perturbed[i] += eps
-                    u, v, t_ = sample_perturbed
-                    # Evaluate solver at perturbed point
-                    solver = Solver(ini_cond=[u, v], t_final=t_, num_points=2, P_gen=power_gen, D1=D1, B12_V1_V2=B12_V1_V2, m1=m1)
-                    t_test, delta_values, omega_values = solver.solve_system()
-                    # traj_pert = solver.solve(*sample_perturbed, t, n=2)
-                    F_pert = np.array([delta_values[-1], omega_values[-1]])
-                    # Finite difference derivative
-                    jacobian[:, i] = (F_pert - F_orig) / eps
-                
-                # Compute spectral norm of Jacobian
-                _, s, _ = svd(jacobian)
-                spectral_norm = max(s)
-                if spectral_norm > max_norm:
-                    max_norm = spectral_norm
+                # traj_pert = solver.solve(*sample_perturbed, t, n=2)
+                F_pert = np.array([delta_values[-1], omega_values[-1]])
+                # Finite difference derivative
+                jacobian[:, i] = (F_pert - F_orig) / eps
+            
+            # Compute spectral norm of Jacobian
+            _, s, _ = svd(jacobian)
+            spectral_norm = max(s)
+            if spectral_norm > max_norm:
+                max_norm = spectral_norm
                     
-        elif solver_type == 'pinn':
-            samples_tensor = torch.tensor(samples, dtype=torch.float32, requires_grad=False)
-            for sample in samples_tensor:
-                preds = model(sample)
-                u0, v0, t = sample
-                # Evaluate solver at original point (use n=2 for start and end points only)
-                u_pred = u0 + preds[0] * t
-                v_pred = v0 + preds[1] * t
-                #traj = solver.solve_system(u0, v0, t, n=2)
-                F_orig = np.array([u_pred.detach(), v_pred.detach()])  # State at t
-                jacobian = np.zeros((2, 3))  # 2 outputs, 3 inputs
-                for i in range(3):  # Perturb each input dimension
-                    sample_perturbed = sample.detach().clone()
-                    sample_perturbed[i] += eps
-                    u, v, t_ = sample_perturbed
-                    # Evaluate solver at perturbed point
-                    preds_ = model(sample_perturbed)
-                    u_pred_ = u + preds_[0] * t_
-                    v_pred_ = v + preds_[1] * t_
-                    # traj_pert = solver.solve(*sample_perturbed, t, n=2)
-                    F_pert = np.array([u_pred_.detach(), v_pred_.detach()])
-                    # Finite difference derivative
-                    jacobian[:, i] = (F_pert - F_orig) / eps
+        #elif solver_type == 'pinn':
+            # samples_tensor = torch.tensor(samples, dtype=torch.float32, requires_grad=False)
+            # for sample in samples_tensor:
+            #     preds = model(sample)
+            #     u0, v0, t = sample
+            #     # Evaluate solver at original point (use n=2 for start and end points only)
+            #     u_pred = u0 + preds[0] * t
+            #     v_pred = v0 + preds[1] * t
+            #     #traj = solver.solve_system(u0, v0, t, n=2)
+            #     F_orig = np.array([u_pred.detach(), v_pred.detach()])  # State at t
+            #     jacobian = np.zeros((2, 3))  # 2 outputs, 3 inputs
+            #     for i in range(3):  # Perturb each input dimension
+            #         sample_perturbed = sample.detach().clone()
+            #         sample_perturbed[i] += eps
+            #         u, v, t_ = sample_perturbed
+            #         # Evaluate solver at perturbed point
+            #         preds_ = model(sample_perturbed)
+            #         u_pred_ = u + preds_[0] * t_
+            #         v_pred_ = v + preds_[1] * t_
+            #         # traj_pert = solver.solve(*sample_perturbed, t, n=2)
+            #         F_pert = np.array([u_pred_.detach(), v_pred_.detach()])
+            #         # Finite difference derivative
+            #         jacobian[:, i] = (F_pert - F_orig) / eps
                 
-                # Compute spectral norm of Jacobian
-                _, s, _ = svd(jacobian)
-                spectral_norm = max(s)
-                if spectral_norm > max_norm:
-                    max_norm = spectral_norm
+            #     # Compute spectral norm of Jacobian
+            #     _, s, _ = svd(jacobian)
+            #     spectral_norm = max(s)
+            #     if spectral_norm > max_norm:
+            #         max_norm = spectral_norm
         
         return max_norm
->>>>>>> master
     
     def gradient_attack(self): 
         return 
@@ -147,8 +169,4 @@ class verifier(nn.Module):
         return
 
     def calculate_NTK(self): # petros work
-<<<<<<< HEAD
         return
-=======
-        return
->>>>>>> master
