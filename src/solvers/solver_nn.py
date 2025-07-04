@@ -256,7 +256,42 @@ class Solver_NN(Solver):
         # Implement the logic to use the neural network model to solve the ODE
         #raise NotImplementedError("Neural network-based ODE solving not implemented yet.")
         
+    def solve_recurrent(self, ini_cond=None, t_final=None, num_points=None):
+        """
+        Solve the ODE using the neural network model in a recurrent fashion.
         
+        Returns:
+            t : np.ndarray of time points
+            Y : np.ndarray of shape (num_points, len(ini_cond)) with the solution
+        """
+        # Use instance values if not provided
+        ini_cond = ini_cond or self.ini_cond
+        t_final = t_final or self.t_final
+        num_points = num_points or self.num_points
+
+        delta0, omega0 = ini_cond
+        dt = t_final / (num_points - 1)  # defining the intervals
+        
+        # Initialise time and solution arrays
+        t_array = np.linspace(0, t_final, num_points, dtype=np.float32)
+        Y = np.zeros((num_points, 2), dtype=np.float32)
+        Y[0] = [delta0, omega0]
+        
+        self.model.eval()
+        with torch.no_grad():
+            delta, omega = delta0, omega0
+            for i in range(1, num_points):
+                t_curr = t_array[i-1]
+                input_tensor = torch.tensor([[delta, omega, t_curr]], dtype=torch.float32)
+                output = self.model(input_tensor).squeeze(0)  # shape should be [2,]
+                delta_dot, omega_dot = output.numpy()
+                
+                # Euler-style update
+                delta = delta + dt * delta_dot
+                omega = omega + dt * omega_dot
+                Y[i] = [delta, omega]
+
+        return t_array, Y    
         
         
 class Normalization_strat(nn.Module):
