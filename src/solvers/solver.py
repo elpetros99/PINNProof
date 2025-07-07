@@ -116,27 +116,77 @@ class Solver:
         sqd = torch.sum(diffs * diffs, dim=1)
         return - (1.0/alpha) * torch.logsumexp(-alpha * sqd, dim=0)
     
-    def split_data(self,dataset):
+    def split_data(self, dataset):
+        """
+        Splits a raw dataset into input features and targets for training.
+
+        Args:
+            dataset: Array-like of samples, each of shape (M, N), where
+                    M = number of features per time step (including initial),
+                    N = number of time steps.
+
+        Returns:
+            x_train: Tensor of shape (total_time_steps, M) with gradients enabled.
+            y_train: Tensor of shape (total_time_steps, M-1) with gradients enabled.
+        """
+        # Convert the entire dataset into a single Tensor
         data = torch.Tensor(dataset)
         x_list, y_list = [], []
 
+        # Process each sample individually
         for sample in data:
-            # no need to re‐wrap sample in torch.tensor; it's already a Tensor
-            # sample shape: (M, N) for instance
-            y = sample[1:].T                 # shape (N, M-1)
-            x = sample.T                     # shape (N, M)
-            x[:, 1:] = x[0, 1:]              # broadcast first row
+            # sample shape: (M, N)
+            
+            # === Target tensor (y) ===
+            # Drop the first feature row (e.g., initial condition) and transpose
+            # to get shape (N, M-1)
+            y = sample[1:].T
+
+            # === Input tensor (x) ===
+            # Transpose sample to shape (N, M)
+            x = sample.T
+            
+            # For each time step, overwrite columns 1..end with the values
+            # from time step 0 (broadcasting initial features across time)
+            x[:, 1:] = x[0, 1:]
+            
+            # Enable gradient tracking for both inputs and targets
             x.requires_grad_(True)
             y.requires_grad_(True)
 
+            # Collect for later concatenation
             x_list.append(x)
             y_list.append(y)
 
-        # one concat per axis
+        # Concatenate all samples along the first (time/batch) dimension
+        # Final shapes:
+        #   x_train: (sum of N over samples, M)
+        #   y_train: (sum of N over samples, M-1)
         x_train = torch.cat(x_list, dim=0)
         y_train = torch.cat(y_list, dim=0)
 
         return x_train, y_train
+
+    
+    def get_trajectories(y_train: torch.Tensor, num_traj: int) -> torch.Tensor:
+        """
+        Re‐shapes a concatenated y_train of shape (num_traj * T, state_dim)
+        into trajectories of shape (num_traj, state_dim, T).
+
+        Args:
+            y_train   (torch.Tensor): concatenated tensor, shape (num_traj * T, state_dim)
+            num_traj  (int):           number of trajectories that were concatenated
+
+        Returns:
+            torch.Tensor: shape (num_traj, state_dim, T)
+        """
+        # total time‐points per trajectory
+        total_time = y_train.size(0)
+        state_dim  = y_train.size(1)
+        T = total_time // num_traj
+
+        # first reshape into (num_traj, T, state_dim), then swap axes 1<->2
+        return y_train.view(num_traj, T, state_dim).permute(0, 2, 1)
 
     def active_sample_initial(
         self, collected_data: torch.Tensor, bounds: torch.Tensor,

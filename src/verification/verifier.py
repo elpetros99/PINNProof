@@ -1,6 +1,7 @@
 import torch 
 import torch.nn as nn 
 import utils
+import numpy as np
 
 class verifier(nn.Module):
     """
@@ -170,3 +171,6 @@ class verifier(nn.Module):
 
     def calculate_NTK(self): # petros work
         return
+
+    def split_conformal_interface(self,cal_dataset):
+        

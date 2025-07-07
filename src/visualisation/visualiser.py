@@ -29,6 +29,11 @@ import loss_landscapes
 import loss_landscapes.metrics
 import torchlens as tl
 
+import numpy as np
+from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 for 3D projection
+
 class visualizer():
     '''A class to visualize the results of a simulation.
     This class is used to visualize the results of a simulation.
@@ -58,6 +63,39 @@ class visualizer():
         
         plt.draw()
         plt.pause(0.01)
+
+
+    # def plot_data_pca_3D(self):
+
+    #     # Suppose:
+    #     #   X is your feature matrix, shape = (n_samples, 8)
+    #     #   y is your target vector, shape = (n_samples,)
+
+    #     # 1. Run PCA
+    #     pca = PCA(n_components=3)
+    #     X3 = pca.fit_transform(x_train[:,1:].detach().numpy())   # shape = (n_samples, 3)
+
+    #     # 2. Plot in 3D
+    #     fig = plt.figure(figsize=(8,6))
+    #     ax = fig.add_subplot(projection='3d')
+    #     sc = ax.scatter(
+    #         X3[:,0], X3[:,1], X3[:,2],
+    #         c=mag_error.detach().numpy(),                # color by target value
+    #         cmap='viridis',     # continuous color map
+    #         s=50,               # marker size
+    #         alpha=0.8
+    #     )
+    #     ax.set_xlabel("PC1")
+    #     ax.set_ylabel("PC2")
+    #     ax.set_zlabel("PC3")
+    #     ax.set_title("PCA (3D) of 8D features, colored by target")
+
+    #     # 3. Add a colorbar to interpret your 1D target scale
+    #     cb = fig.colorbar(sc, ax=ax, shrink=0.6, pad=0.1)
+    #     cb.set_label("Target value")
+
+    #     plt.tight_layout()
+    #     plt.show()
 
     def plot_weights(self, bins=50, ncols=3):
         """
