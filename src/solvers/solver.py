@@ -13,7 +13,7 @@ class Solver:
     Base class for ODE solvers. Subclasses must implement solve() and can use
     generate_dataset() and active_sample_initial() for data generation.
     """
-    def __init__(self, func, interface_func, *args, **kwargs):
+    def __init__(self, func, interface_func, control_variables=2, *args, **kwargs):
         """
         Initialize the ODE solver with:
           • func: the ODE function f(t, y, *args)
@@ -24,6 +24,7 @@ class Solver:
         self.interface_func = interface_func
         self.args = args
         self.kwargs = kwargs
+        self.control_variables= control_variables
 
     def generate_dataset(
         self,
@@ -88,6 +89,7 @@ class Solver:
 
         ic_tensor = torch.stack(ic_list, dim=0)
         traj_tensor = torch.stack(traj_list, dim=0)
+        traj_tensor = traj_tensor.permute(0, 2, 1)
 
         if save_path:
             os.makedirs(save_path, exist_ok=True)
@@ -113,6 +115,28 @@ class Solver:
         diffs = collected_flat - traj_flat.unsqueeze(0)
         sqd = torch.sum(diffs * diffs, dim=1)
         return - (1.0/alpha) * torch.logsumexp(-alpha * sqd, dim=0)
+    
+    def split_data(self,dataset):
+        data = torch.Tensor(dataset)
+        x_list, y_list = [], []
+
+        for sample in data:
+            # no need to re‐wrap sample in torch.tensor; it's already a Tensor
+            # sample shape: (M, N) for instance
+            y = sample[1:].T                 # shape (N, M-1)
+            x = sample.T                     # shape (N, M)
+            x[:, 1:] = x[0, 1:]              # broadcast first row
+            x.requires_grad_(True)
+            y.requires_grad_(True)
+
+            x_list.append(x)
+            y_list.append(y)
+
+        # one concat per axis
+        x_train = torch.cat(x_list, dim=0)
+        y_train = torch.cat(y_list, dim=0)
+
+        return x_train, y_train
 
     def active_sample_initial(
         self, collected_data: torch.Tensor, bounds: torch.Tensor,

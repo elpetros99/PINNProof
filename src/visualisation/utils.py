@@ -22,3 +22,5 @@ def split_data(dataset):
     y_train = torch.cat(y_list, dim=0)
 
     return x_train, y_train
+
+
