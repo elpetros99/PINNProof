@@ -41,6 +41,8 @@ class visualizer():
         self.ax = None
         self.fig2 = None
         self.model_h = None
+        self.A= None # matrix with flattened activation values for many samples
+        self.svd_matrices=None # svd matrices for A in the form of (U, S, Vt)
     
     def plot(self):
         '''Plot the results of the simulation.'''
@@ -377,7 +379,7 @@ class visualizer():
                         interpolation=interpolation,
                         cmap=cmap)
             ax.set_yticks(range(len(layers_to_print)))
-            ax.set_yticklabels(layers)
+            ax.set_yticklabels(layers_to_print)
             ax.set_xlabel('Neuron index')
             ax.set_title(f'Sample #{idx}')
             # add a colorbar next to each subplot
@@ -389,6 +391,160 @@ class visualizer():
         
         plt.tight_layout()
         plt.show()
+
+    def run_svd_global(self, layers_to_print=[],grad=False):
+        """
+        Plots activation heatmaps for the given layers and sample indices.
+        
+        Parameters
+        ----------
+        layers : list of str
+            The layer names to include (rows of each heatmap).
+        sample_indices : list of int
+            The sample indices to plot; one subplot per index.
+        model_history : dict
+            Mapping layer_name -> object with .tensor_contents (list/array of tensors).
+        ncols : int, optional
+            How many columns in the grid. Default is ceil(sqrt(n_samples)).
+        figsize_per_plot : tuple, optional
+            Width, height in inches per subplot.
+        cmap : str or Colormap, optional
+            Matplotlib colormap for imshow.
+        interpolation : str, optional
+            Matplotlib interpolation mode.
+        """
+        if self.model_h == None:
+            raise Exception("Oops, you should first run the save_activations_grads function")
+        
+        num_samples = self.model_h[layers_to_print[0]].tensor_contents.shape[0]
+        if grad==False:
+            flat_per_layer = [
+                self.model_h[L].tensor_contents
+                                .view(num_samples, -1)
+                                .detach()
+                                .cpu()
+                                .numpy()
+                for L in layers_to_print
+            ]
+        else:
+            flat_per_layer = [
+                self.model_h[L].grad_contents
+                                .view(num_samples, -1)
+                                .detach()
+                                .cpu()
+                                .numpy()
+                for L in layers_to_print
+            ]
+        # 4) concatenate them into one big matrix A of shape (num_samples, total_neurons)
+        A = np.concatenate(flat_per_layer, axis=1)
+        self.A = A
+        U, S, Vt = np.linalg.svd(A, full_matrices=False)
+        self.svd_matrices = (U, S, Vt)
+        return
+
+    def plot_svd_spectrum(self):
+        # --- Plot spectrum ---
+        if self.svd_matrices == None:
+            raise Exception("Oops, you should first run the run_svd_global function")
+        (_, S, _) = self.svd_matrices
+        plt.figure(figsize=(6,4))
+        plt.plot(S, marker='o')
+        plt.yscale('log')
+        plt.xlabel('Mode index')
+        plt.ylabel('Singular value (log scale)')
+        plt.title('Global singular‐value spectrum')
+        plt.show()
+
+    def plot_svd_energy(self):
+        # --- Plot spectrum ---
+        if self.svd_matrices == None:
+            raise Exception("Oops, you should first run the run_svd_global function")
+        (_, S, _) = self.svd_matrices
+        expl = np.cumsum(S**2) / np.sum(S**2)
+        plt.plot(expl, marker='o')
+        plt.xlabel('Number of modes')
+        plt.ylabel('Cumulative explained variance')
+        plt.yscale('linear')
+        plt.axhline(0.9, color='k', linestyle='--')
+        plt.show()
+
+    def plot_svd_mode_analysis(self,layers_to_print=[], modes_considered=5):
+        if self.svd_matrices == None:
+            raise Exception("Oops, you should first run the run_svd_global function")
+        if self.model_h == None:
+            raise Exception("Oops, you should first run the save_activations_grads function")
+        (U, S, Vt) = self.svd_matrices
+        n_per_layer = [int(self.model_h[L].tensor_contents[1].numel()) for L in layers_to_print]
+        offsets     = np.cumsum([0] + n_per_layer)
+        total_neurons = offsets[-1]
+        # ---Top 3 modes as heatmaps ---
+        for m in range(modes_considered):
+            vec = Vt[m]
+            # split vec back per layer
+            maps = [vec[offsets[i]:offsets[i+1]] for i in range(len(layers_to_print))]
+            max_n = max(len(mp) for mp in maps)
+            heat  = np.full((len(layers_to_print), max_n), np.nan)
+            for i, mp in enumerate(maps):
+                heat[i, :len(mp)] = mp
+
+            plt.figure(figsize=(8,3))
+            plt.imshow(heat, aspect='auto', interpolation='none')
+            plt.colorbar(label=f'Mode {m+1} loadings')
+            plt.yticks(range(len(layers_to_print)), layers_to_print)
+            plt.xlabel('Neuron index')
+            plt.title(f'Global mode #{m+1}')
+            plt.show()
+
+        # --- Extract “circuits” for modes 1–3 by thresholding loadings ---
+        circuits = {}
+        for m in range(modes_considered):
+            thresh = 2 * np.std(Vt[m])
+            idxs   = np.where(np.abs(Vt[m]) > thresh)[0]
+            # map back to each layer
+            circuits[m+1] = {
+                layers_to_print[i]: (
+                    idxs[(idxs >= offsets[i]) & (idxs < offsets[i+1])] - offsets[i]
+                ).tolist()
+                for i in range(len(layers_to_print))
+            }
+
+        print("Circuits (mode → {layer: [neuron indices]}):")
+        # self.circuits = circuits
+        for m, mp in circuits.items():
+            print(f"\nMode {m}:")
+            for L, nl in mp.items():
+                print(f"  {L}: {nl}")
+
+        # --- Bar-chart of circuit sizes per layer ---
+        for m in range(modes_considered):
+            counts = [len(circuits[m+1][L]) for L in layers_to_print]
+            plt.figure(figsize=(6,3))
+            plt.bar(layers_to_print, counts)
+            plt.xticks(rotation=45)
+            plt.ylabel('Num. neurons')
+            plt.title(f'Mode {m+1} circuit sizes by layer')
+            plt.tight_layout()
+            plt.show()
+        
+        print("How many neurons each mode has in common with other modes")
+        # layers = list(circuits[1].keys())
+        modes  = sorted(circuits.keys())
+        for L in layers_to_print:
+            # build a matrix M where M[i,j] = |circuit_i ∩ circuit_j| for layer L
+            M = np.zeros((len(modes), len(modes)), int)
+            for a, i in enumerate(modes):
+                for b, j in enumerate(modes):
+                    set_i = set(circuits[i][L])
+                    set_j = set(circuits[j][L])
+                    M[a,b] = len(set_i & set_j)
+            print(f"\nOverlap counts in layer {L}:")
+            print("    " + "  ".join(f"M{j}" for j in modes))
+            for a, i in enumerate(modes):
+                row = "  ".join(f"{M[a,b]:2d}" for b in range(len(modes)))
+                print(f"M{i}  {row}")
+
+        return
+
 
 
         # '''Plot the interface of the simulation.'''
