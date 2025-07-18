@@ -8,7 +8,7 @@ from pyDOE import lhs
 import os
 import copy
 
-class Solver:
+class Solver():
     """
     Base class for ODE solvers. Subclasses must implement solve() and can use
     generate_dataset() and active_sample_initial() for data generation.
@@ -28,7 +28,7 @@ class Solver:
 
     def generate_dataset(
         self,
-        ic_ranges: torch.Tensor,
+        ic_ranges: dict,
         num_ic: int,
         t_final: float,
         num_points: int,
@@ -39,7 +39,7 @@ class Solver:
         """Build a dataset by solving the ODE for multiple ICs.
 
         Args:
-            ic_ranges: Tensor[D,2] of [min,max] per state variable.
+            ic_ranges: Dictionary of ranges, which will be converted to Tensor[D,2] of [min,max] per state variable.
             num_ic:    total ICs to generate.
             t_final:   end time.
             num_points:points per trajectory.
@@ -51,6 +51,8 @@ class Solver:
             ic_tensor:   [num_ic, D]
             traj_tensor: [num_ic, num_points, D]
         """
+
+        ic_ranges = torch.tensor(list(ic_ranges.values()))
         D = ic_ranges.shape[0]
         ic_list, traj_list = [], []
         t_grid = torch.linspace(0.0, t_final, num_points, device=device)
@@ -69,7 +71,7 @@ class Solver:
                 traj_list.append(traj)
 
         elif sampling == "active":
-            bounds = ic_ranges.clone().float()
+            bounds = ic_ranges.clone().float() 
             for k in range(num_ic):
                 if k == 0:
                     # first IC random
@@ -96,7 +98,7 @@ class Solver:
             torch.save(ic_tensor, os.path.join(save_path, 'initial_conditions.pt'))
             torch.save(traj_tensor, os.path.join(save_path, 'trajectories.pt'))
 
-        return ic_tensor, traj_tensor
+        return t_grid, traj_tensor, ic_tensor
 
     def solve(self, ini_cond, t_final, num_points):
         """Solve the ODE via torchdiffeq, returning (t, sol).

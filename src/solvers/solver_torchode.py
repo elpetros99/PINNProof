@@ -1,5 +1,3 @@
-<<<<<<< HEAD
-=======
 # -*- coding: utf-8 -*-
 """
 Created on Fri Jun 13 14:48:54 2025
@@ -7,7 +5,6 @@ Created on Fri Jun 13 14:48:54 2025
 @author: INDRAJIT
 """
 
->>>>>>> master
 import numpy as np
 import torch
 import torch.nn as nn
@@ -182,8 +179,4 @@ if __name__ == "__main__":
     plt.legend()
 
     plt.tight_layout()
-<<<<<<< HEAD
     plt.show()
-=======
-    plt.show()
->>>>>>> master

@@ -548,65 +548,65 @@ class FCN(nn.Module):
 
 
 # Example usage
-# if __name__ == "__main__":
-# Define a placeholder ODE function (not used directly in NN solver)
-def my_system(Y, t, *args, **kwargs):
-    # this function takes as input the current state of the variables, and outputs their derivatives w.r.t t
-    delta, omega = Y
-    (D1, B12, m1, P_gen) = args
-    ddelta_dt = omega
-    domega_dt = (-D1*omega - B12*np.sin(delta) + P_gen) / m1 
-    return [ddelta_dt, domega_dt]
+if __name__ == "__main__":
+    # Define a placeholder ODE function (not used directly in NN solver)
+    def my_system(Y, t, *args, **kwargs):
+        # this function takes as input the current state of the variables, and outputs their derivatives w.r.t t
+        delta, omega = Y
+        (D1, B12, m1, P_gen) = args
+        ddelta_dt = omega
+        domega_dt = (-D1*omega - B12*np.sin(delta) + P_gen) / m1 
+        return [ddelta_dt, domega_dt]
 
-# Physical parameters
-params = (0.10525, 0.1, 0.2, 0.4)  # P_gen, D1, B12_V1_V2, m1
+    # Physical parameters
+    params = (0.10525, 0.1, 0.2, 0.4)  # P_gen, D1, B12_V1_V2, m1
 
-# Configure solver
-solver = Solver_NN(
-    func=my_system,
-    physical_params={
-        'P_gen': 0.10525,
-        'D_1': 0.1,
-        'B12_V1_V2': 0.2,
-        'm1': 0.4        
+    # Configure solver
+    solver = Solver_NN(
+        func=my_system,
+        physical_params={
+            'P_gen': 0.10525,
+            'D_1': 0.1,
+            'B12_V1_V2': 0.2,
+            'm1': 0.4        
+            },
+        network_params={
+            'N_INPUT': 3,
+            'N_OUTPUT': 2,
+            'N_HIDDEN': 64,
+            'N_LAYERS': 3
         },
-    network_params={
-        'N_INPUT': 3,
-        'N_OUTPUT': 2,
-        'N_HIDDEN': 64,
-        'N_LAYERS': 3
-    },
-    training_params={
-        'epochs': 12000,
-        'lr': 1e-3,
-        'gamma': 0.9996,
-        'recording_step': 1000
-    },
-    domain_params={
-        'num_collocation_points': 11,
-        'range_training_time': 2,
-        'delta_range': [0, 1],
-        'omega_range': [-0.5, 0.5],
-        'num_initial_deltas': 10,
-        'num_initial_omegas': 10
-    },
-    loss_weights=[1, 3]
-)
+        training_params={
+            'epochs': 12000,
+            'lr': 1e-3,
+            'gamma': 0.9996,
+            'recording_step': 1000
+        },
+        domain_params={
+            'num_collocation_points': 11,
+            'range_training_time': 2,
+            'delta_range': [0, 1],
+            'omega_range': [-0.5, 0.5],
+            'num_initial_deltas': 10,
+            'num_initial_omegas': 10
+        },
+        loss_weights=[1, 3]
+    )
 
-# Train the model
-loss_history = solver.train()
+    # Train the model
+    loss_history = solver.train()
 
-# Solve for specific initial conditions
-t, solution = solver.solve(
-    ini_cond=[0.05, 0.0],
-    t_final=15,
-    num_points=200
-)
+    # Solve for specific initial conditions
+    t, solution = solver.solve(
+        ini_cond=[0.05, 0.0],
+        t_final=15,
+        num_points=200
+    )
 
-# Extract solutions
-delta = solution[:, 0]
-omega = solution[:, 1]
+    # Extract solutions
+    delta = solution[:, 0]
+    omega = solution[:, 1]
 
-print(f"Solution computed at {len(t)} time points")
-print(f"Delta range: {delta.min():.4f} to {delta.max():.4f}")
-print(f"Omega range: {omega.min():.4f} to {omega.max():.4f}")
+    print(f"Solution computed at {len(t)} time points")
+    print(f"Delta range: {delta.min():.4f} to {delta.max():.4f}")
+    print(f"Omega range: {omega.min():.4f} to {omega.max():.4f}")

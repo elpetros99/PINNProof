@@ -1,20 +1,12 @@
-<<<<<<< HEAD
-=======
-# -*- coding: utf-8 -*-
-"""
-Created on Fri Jun 13 14:49:10 2025
 
-@author: INDRAJIT
-"""
-
->>>>>>> master
 import numpy as np
-import autolirpa
+# import autolirpa # commenting this out because might not work always so leaving it out for now
 import torch
 import torch.nn as nn
 import torch
 import torch.nn as nn
-from autolirpa.operators import JacobianOP
+from math import ceil
+# from autolirpa.operators import JacobianOP
 
 def sampling_domain(dimensions_list, num_points): # reimplement
     """
@@ -30,9 +22,44 @@ def sampling_domain(dimensions_list, num_points): # reimplement
 
     # Create a meshgrid and stack the points
     mesh = np.meshgrid(*grids, indexing='ij')
-    sampled_points = np.vstack(map(np.ravel, mesh)).T
+    # sampled_points = np.vstack(map(np.ravel, mesh)).T  # Petros original line
+    sampled_points = np.vstack(list(map(np.ravel, mesh))).T  # minor change in this
 
     return sampled_points
+
+
+# This sampling function was working in the 2d case, to be modified
+def generate_samples(bounds: dict, N: int, method: str = 'random'):
+    # uniform or random for now, bounds is the u and v bounds, t is the time bounds, N is number of samples
+    var_names = list(bounds.keys())
+    num_vars = len(var_names)
+    
+    if method == 'random':
+        # Random sampling
+        samples = []
+        for _ in range(N):
+            sample = [np.random.uniform(*var_bounds[var]) for var in var_names]
+            samples.append(np.array(sample))
+
+    elif method == 'uniform':
+        # Uniform grid sampling using Cartesian product
+        k = ceil(N ** (1 / num_vars))  # Divisions per axis
+        grids = []
+        for var in var_names:
+            low, high = var_bounds[var]
+            if k > 2: # to exclude the exact boundary, i.e. sample from () not []
+                grid = np.linspace(low, high, k + 2)[1:-1]
+            else:
+                grid = np.linspace(low, high, k)
+            grids.append(grid)
+        # Cartesian product of grid points
+        grid_points = list(product(*grids))
+        np.random.shuffle(grid_points)  # Randomize order to avoid diagonal bias
+        if len(grid_points) > N:
+            grid_points = grid_points[:N]
+        samples = [np.array(point) for point in grid_points]
+    return samples
+
 
 def local_lipschitz_via_jacobian(model: nn.Module, x0: torch.Tensor) -> torch.Tensor:
     """
@@ -112,8 +139,4 @@ if __name__ == "__main__":
 #             jvp1 = jacobian[:,:,3]
 
 #             return jvp1 #self.fixed_weights_layer(y)#jvp1 #jvp1 #jacobian#jvp
-<<<<<<< HEAD
 #     return
-=======
-#     return
->>>>>>> master

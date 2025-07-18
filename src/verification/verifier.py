@@ -1,6 +1,6 @@
 import torch 
 import torch.nn as nn 
-import utils
+from utils import *
 import numpy as np
 
 class verifier(nn.Module):
@@ -29,12 +29,12 @@ class verifier(nn.Module):
         """
         # solver1 and solver2 must have some flag variable (eg: boolean contains_grad) to denote whether they have gradients or not, depending on this the lipschitz will be computed
         if self.solver1.contains_grad:
-            L1 = self.lipschitz_method_grads(self.solver1, self.bounds, n_samples=1000)# compute lipschitz
+            L1 = self.lipschitz_method_grads(self.solver1, self.bounds, n_samples=1000) # compute lipschitz
         else:
             L1 = self.lipschitz_method(self.solver1, self.bounds, n_samples=1000)
 
         if self.solver2.contains_grad:
-            L2 = self.lipschitz_method_grads(self.solver2, self.bounds, n_samples=1000)# compute lipschitz
+            L2 = self.lipschitz_method_grads(self.solver2, self.bounds, n_samples=1000) # compute lipschitz
         else:
             L2 = self.lipschitz_method(self.solver2, self.bounds, n_samples=1000)
 
@@ -67,7 +67,10 @@ class verifier(nn.Module):
     
     def lipschitz_method_grads(self, solver, bounds, n_samples=1000):
         # Generate samples [u0, v0, t]
-        samples = generate_samples(bounds, n_samples, method='uniform')  # shape (n_samples, 3)
+        bounds = torch.tensor(list(bounds.values()))
+        bounds_for_sampling = list(map(tuple, bounds.tolist()))
+        samples = sampling_domain(bounds_for_sampling, num_points=5)  # this creates a large number of samples, exponential
+        # samples = generate_samples(bounds, n_samples, method='uniform')  # shape (n_samples, 3)
         samples_tensor = torch.tensor(samples, dtype=torch.float32, requires_grad=True)
         max_norm = 0.0
         for sample in samples_tensor:
@@ -102,7 +105,12 @@ class verifier(nn.Module):
     
     def lipschitz_method(self, bounds, n_samples=1000, eps=1e-5, model=None):
         # Generate samples [u0, v0, t]
-        samples = generate_samples(bounds, n_samples, method='uniform')
+
+        bounds = torch.tensor(list(bounds.values()))
+        bounds_for_sampling = list(map(tuple, bounds.tolist()))
+        samples = sampling_domain(bounds_for_sampling, num_points=5)
+
+        # samples = generate_samples(bounds, n_samples, method='uniform')
         max_norm = 0.0
         
         for sample in samples:
@@ -173,4 +181,4 @@ class verifier(nn.Module):
         return
 
     def split_conformal_interface(self,cal_dataset):
-        
+        return
