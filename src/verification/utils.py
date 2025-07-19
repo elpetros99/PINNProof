@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch
 import torch.nn as nn
 from math import ceil
+from itertools import product
 # from autolirpa.operators import JacobianOP
 
 def sampling_domain(dimensions_list, num_points): # reimplement
@@ -28,7 +29,6 @@ def sampling_domain(dimensions_list, num_points): # reimplement
     return sampled_points
 
 
-# This sampling function was working in the 2d case, to be modified
 def generate_samples(bounds: dict, N: int, method: str = 'random'):
     # uniform or random for now, bounds is the u and v bounds, t is the time bounds, N is number of samples
     var_names = list(bounds.keys())
@@ -38,7 +38,7 @@ def generate_samples(bounds: dict, N: int, method: str = 'random'):
         # Random sampling
         samples = []
         for _ in range(N):
-            sample = [np.random.uniform(*var_bounds[var]) for var in var_names]
+            sample = [np.random.uniform(*bounds[var]) for var in var_names]
             samples.append(np.array(sample))
 
     elif method == 'uniform':
@@ -46,7 +46,7 @@ def generate_samples(bounds: dict, N: int, method: str = 'random'):
         k = ceil(N ** (1 / num_vars))  # Divisions per axis
         grids = []
         for var in var_names:
-            low, high = var_bounds[var]
+            low, high = bounds[var]
             if k > 2: # to exclude the exact boundary, i.e. sample from () not []
                 grid = np.linspace(low, high, k + 2)[1:-1]
             else:

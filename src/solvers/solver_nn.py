@@ -4,6 +4,7 @@ import torch.nn as nn
 import numpy as np
 import random
 from solvers.solver import Solver
+from verification.utils import *
 
 class Solver_NN(Solver):
     """
@@ -21,7 +22,7 @@ class Solver_NN(Solver):
         model      : pre-trained model if any
     """
     
-    def __init__(self, func, ini_cond=None, t_final=None, num_points=None, model=None, *args, **kwargs):
+    def __init__(self, func, model=None, *args, **kwargs):
         
         #super().__init__(func, ini_cond, t_final, num_points, *args, **kwargs)
 
@@ -97,6 +98,8 @@ class Solver_NN(Solver):
         # Build model if needed
         if self.requires_training:
             self.model = self._build_model()
+
+        self.func = func
         
     def _build_model(self):
         """Construct the neural network model"""
@@ -223,39 +226,45 @@ class Solver_NN(Solver):
 
     def solve(self, ini_cond=None, t_final=None, num_points=None):
         """
-        Solve the ODE using the neural network model.
+        Solve the ODE using the neural network model in a one-shot manner.
+
+        ini_cond is a list, as given
         
         Returns:
             t : np.ndarray of time points
             Y : np.ndarray of shape (num_points, len(ini_cond)) with the solution
         """
         # Use instance values if not provided
-        ini_cond = ini_cond or self.ini_cond
-        t_final = t_final or self.t_final
-        num_points = num_points or self.num_points
+        ini_cond = ini_cond if ini_cond is not None else self.ini_cond
+        t_final = t_final if t_final is not None else self.t_final
+        num_points = num_points if num_points is not None else self.num_points
         
+        n_vars = len(ini_cond)
+
         # Prepare inputs
-        delta0, omega0 = ini_cond
-        t_tensor = torch.linspace(0, t_final, num_points, dtype=torch.float32).view(-1, 1)
-        inputs = torch.cat([
-            torch.full((num_points, 1), delta0),
-            torch.full((num_points, 1), omega0),
-            t_tensor
-        ], dim=1)
+        ini_cond_tensor = torch.tensor(ini_cond, dtype=torch.float32).view(1, -1)  # reshaping to (1, n_vars)
+        t_tensor = torch.linspace(0, t_final, num_points, dtype=torch.float32).view(-1, 1)  # time tensor (num_points, 1)
+
+        # The final input tensor shape will be (num_points, n_vars + 1).
+        ini_cond_repeated = ini_cond_tensor.repeat(num_points, 1)
+        inputs = torch.cat([ini_cond_repeated, t_tensor], dim=1)
         
         # Run prediction
         self.model.eval()
         with torch.no_grad():
-            outputs = self.model(inputs)
+            outputs = self.model(inputs)  # expected shape is (num_points, n_vars)
         
-        # Reconstruct states
-        delta_hat = delta0 + outputs[:, 0].numpy() * t_tensor.numpy().squeeze()
-        omega_hat = omega0 + outputs[:, 1].numpy() * t_tensor.numpy().squeeze()
+        # Reconstruct states by indirect prediction
+        # Y = ini_cond_tensor + outputs * t_tensor
+
+        # Reconstruct states by direct prediction
+        Y = outputs
         
-        return t_tensor.numpy().squeeze(), np.column_stack((delta_hat, omega_hat))
+        return t_tensor.numpy().squeeze(), Y.detach().numpy()
         # Implement the logic to use the neural network model to solve the ODE
         #raise NotImplementedError("Neural network-based ODE solving not implemented yet.")
         
+
     def solve_recurrent(self, ini_cond=None, t_final=None, num_points=None):
         """
         Solve the ODE using the neural network model in a recurrent fashion.
@@ -265,31 +274,37 @@ class Solver_NN(Solver):
             Y : np.ndarray of shape (num_points, len(ini_cond)) with the solution
         """
         # Use instance values if not provided
-        ini_cond = ini_cond or self.ini_cond
-        t_final = t_final or self.t_final
-        num_points = num_points or self.num_points
+        ini_cond = ini_cond if ini_cond is not None else self.ini_cond
+        t_final = t_final if t_final is not None else self.t_final
+        num_points = num_points if num_points is not None else self.num_points
 
-        delta0, omega0 = ini_cond
-        dt = t_final / (num_points - 1)  # defining the intervals
-        
-        # Initialise time and solution arrays
+        n_vars = len(ini_cond)
+        dt = t_final / (num_points - 1)  # time step
+
         t_array = np.linspace(0, t_final, num_points, dtype=np.float32)
-        Y = np.zeros((num_points, 2), dtype=np.float32)
-        Y[0] = [delta0, omega0]
-        
+        Y = np.zeros((num_points, n_vars), dtype=np.float32)
+        Y[0] = np.array(ini_cond, dtype=np.float32)
+ 
         self.model.eval()
         with torch.no_grad():
-            delta, omega = delta0, omega0
             for i in range(1, num_points):
+                current_state = Y[i-1]
                 t_curr = t_array[i-1]
-                input_tensor = torch.tensor([[delta, omega, t_curr]], dtype=torch.float32)
-                output = self.model(input_tensor).squeeze(0)  # shape should be [2,]
-                delta_dot, omega_dot = output.numpy()
+
+                input_tensor = torch.cat([
+                    torch.tensor(current_state, dtype=torch.float32).view(1, -1),
+                    torch.tensor([[t_curr]], dtype=torch.float32)], dim=1)   # shape should be (1, n_vars+1)
                 
-                # Euler-style update
-                delta = delta + dt * delta_dot
-                omega = omega + dt * omega_dot
-                Y[i] = [delta, omega]
+                output = self.model(input_tensor)
+
+                # Insdirect prediction
+                derivatives = output.numpy().flatten()
+                next_state = current_state + dt * derivatives
+
+                # Direct prediction
+                # next_state = output.numpy().flatten()
+
+                Y[i] = next_state
 
         return t_array, Y    
         
@@ -306,60 +321,54 @@ class Solver_NN(Solver):
         Returns:
             residuals: torch.Tensor of shape (num_trajectories, num_timepoints, 2)
         """
-        samples = self.generate_samples(bounds, num_trajectories, num_points)  # generate samples function needs to be corrected, use either this class or the other one
-        u0s = samples[:, 0, 0]  # shape: (N,)
-        v0s = samples[:, 1, 0]  # shape: (N,)
-        t_grid = samples[:, 2, :] if samples.shape[1] > 2 else torch.linspace(
-            bounds['t'][0], bounds['t'][1], num_points).repeat(num_trajectories, 1)  # shape: (N, T)
+        var_names = [k for k in bounds.keys() if k != 't']
+        n_vars = len(var_names)
 
-        residuals = []
+        # Generate batched samples
+        y0s, t_grid = self.generate_batched_samples(bounds, var_names, num_trajectories, num_points)
+        t_grid.requires_grad_(True)
 
-        for i in range(num_trajectories):
-            u0 = u0s[i]
-            v0 = v0s[i]
-            t = t_grid[i].view(-1, 1)  # (T, 1)
-            t.requires_grad_(True)
+        t_vec = t_grid.reshape(-1, 1)
+        y0s_vec = y0s.repeat_interleave(num_points, dim=0)   # Repeat initial conditions for each time point: (N, n_vars) -> (N * T, n_vars)
 
-            # Input tensor for the network: should be of shape (T, 3)
-            u0_repeat = u0.repeat(num_points, 1) if isinstance(u0, torch.Tensor) else torch.full_like(t, u0)
-            v0_repeat = v0.repeat(num_points, 1) if isinstance(v0, torch.Tensor) else torch.full_like(t, v0)
-            inp = torch.cat([u0_repeat, v0_repeat, t], dim=1)  # (T, 3)
+        # Concatenate to form the model input of shape (Num_trajectories * num_points, n_vars + 1)
+        model_input = torch.cat([y0s_vec, t_vec], dim=1)
 
-            # Passing through and predicting using the NN
-            self.model.eval()
-            out = self.model(inp)  # should be having shape of (T, 2)
+        self.model.eval()
+        model_output = self.model(model_input)
 
-            u_pred = u0 + out[:, 0] * t.squeeze()
-            v_pred = v0 + out[:, 1] * t.squeeze()
+        y_pred = y0s_vec + model_output * t_vec
 
-            # Stack to get y_pred = [u(t), v(t)]
-            y_pred = torch.stack([u_pred, v_pred], dim=1)  # (T, 2)
+        # Compute dy/dt for all points at once.
+        dy_dt_vec = torch.autograd.grad(
+            outputs=y_pred,
+            inputs=t_vec,
+            grad_outputs=torch.ones_like(y_pred),
+            create_graph=True
+        )[0]
+        # dy_dt_vec will have shape (N * T, n_vars)
 
-            # Computing the dy/dt via autograd
-            du_dt = torch.autograd.grad(
-                u_pred, t,
-                grad_outputs=torch.ones_like(u_pred),
-                create_graph=True,
-                retain_graph=True
-            )[0]
+        f_val = self.func(y_pred, t_vec)
+        residuals_vec = dy_dt_vec - f_val
+        residuals = residuals_vec.view(num_trajectories, num_points, n_vars)   # reshaping as required
+    
+        return residuals
 
-            dv_dt = torch.autograd.grad(
-                v_pred, t,
-                grad_outputs=torch.ones_like(v_pred),
-                create_graph=True,
-                retain_graph=True
-            )[0]
 
-            dy_dt = torch.stack([du_dt.squeeze(), dv_dt.squeeze()], dim=1)  # (T, 2)
+    def generate_batched_samples(self, bounds, var_names, num_trajectories, num_points):
+        # create a tensor for the lower bounds and a tensor for the upper bounds, then sample uniformly in the space between them
+        n_vars = len(var_names)
 
-            # Compute true RHS using self.func, func should be passed appropriately
-            f = self.func(y_pred, t)  # (T, 2)
+        lower_bounds = torch.tensor([bounds[v][0] for v in var_names]).view(1, -1)
+        upper_bounds = torch.tensor([bounds[v][1] for v in var_names]).view(1, -1)
 
-            # Residual: dy/dt - f(y, t)
-            res = dy_dt - f  # (T, 2)
-            residuals.append(res)
+        y0s = lower_bounds + (upper_bounds - lower_bounds) * torch.rand(num_trajectories, n_vars)
+        t_lower, t_upper = bounds['t']
+        t_row = torch.linspace(t_lower, t_upper, num_points).view(1, -1)
+        t_grid = t_row.repeat(num_trajectories, 1)
 
-        return torch.stack(residuals, dim=0)  # shape should be of (N, T, 2)
+        return y0s, t_grid
+
 
 
 class Normalization_strat(nn.Module):
