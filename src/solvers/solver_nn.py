@@ -22,7 +22,7 @@ class Solver_NN(Solver):
         model      : pre-trained model if any
     """
     
-    def __init__(self, func, model=None, *args, **kwargs):
+    def __init__(self, func, n_control, n_states, model=None, *args, **kwargs):
         
         #super().__init__(func, ini_cond, t_final, num_points, *args, **kwargs)
 
@@ -100,6 +100,8 @@ class Solver_NN(Solver):
             self.model = self._build_model()
 
         self.func = func
+        self.n_control = n_control
+        self.n_states = n_states
         
     def _build_model(self):
         """Construct the neural network model"""
@@ -332,12 +334,12 @@ class Solver_NN(Solver):
         y0s_vec = y0s.repeat_interleave(num_points, dim=0)   # Repeat initial conditions for each time point: (N, n_vars) -> (N * T, n_vars)
 
         # Concatenate to form the model input of shape (Num_trajectories * num_points, n_vars + 1)
-        model_input = torch.cat([y0s_vec, t_vec], dim=1)
+        model_input = torch.cat([t_vec, y0s_vec], dim=1)
 
         self.model.eval()
-        model_output = self.model(model_input)
+        y_pred = self.model(model_input)
 
-        y_pred = y0s_vec + model_output * t_vec
+        # y_pred = y0s_vec + model_output * t_vec  # if model is to give indirect output, not considered now
 
         # Compute dy/dt for all points at once.
         dy_dt_vec = torch.autograd.grad(
@@ -348,9 +350,27 @@ class Solver_NN(Solver):
         )[0]
         # dy_dt_vec will have shape (N * T, n_vars)
 
-        f_val = self.func(y_pred, t_vec)
-        residuals_vec = dy_dt_vec - f_val
-        residuals = residuals_vec.view(num_trajectories, num_points, n_vars)   # reshaping as required
+        # Get the initial conditions for the last 3 variables.
+        y0s_control = y0s_vec[:, self.n_states:] # Shape: (N * T, 3)
+        y_full = torch.cat([y_pred, y0s_control], dim=1) # Shape: (N * T, 7) for the actual func function
+        
+        f_val_list = []
+        for i in range(y_full.shape[0]):
+            # Get the i-th state vector (shape 7,) and i-th time value
+            y = y_full[i]
+            t = t_vec[i]
+        
+            f = self.func(t, y) # Returns a tensor of shape (7,)
+            f_val_list.append(f)
+        
+        f_val_full = torch.stack(f_val_list, dim=0)   
+
+        # f_val_full = self.func(t_vec, y_full)  # this can be used if func is vectorised
+        f_val_pred = f_val_full[:, :self.n_states]
+
+        residuals_vec = dy_dt_vec - f_val_pred
+
+        residuals = residuals_vec.view(num_trajectories, num_points, self.n_states)   # reshaping as required
     
         return residuals
 

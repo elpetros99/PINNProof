@@ -1,7 +1,8 @@
 import torch 
 import torch.nn as nn 
-from utils import *
+from verification.utils import *
 import numpy as np
+from torch.func import vmap, jacrev
 
 class verifier(nn.Module):
     """
@@ -27,28 +28,29 @@ class verifier(nn.Module):
         Returns:
             A tensor representing the verification result (e.g., error).
         """
+        var_names = [k for k in self.var_bounds.keys() if k != 't']
+        input_order = ['t'] + var_names
+        
         # solver1 and solver2 must have some flag variable (eg: boolean contains_grad) to denote whether they have gradients or not, depending on this the lipschitz will be computed
-        if self.solver1.contains_grad:
-            L1 = self.lipschitz_method_grads(self.solver1, self.bounds, n_samples=1000) # compute lipschitz
-        else:
-            L1 = self.lipschitz_method(self.solver1, self.bounds, n_samples=1000)
+        # if self.solver1.contains_grad:
+        #     L1 = self.lipschitz_method_grads(self.solver1, self.bounds, n_samples=1000) # compute lipschitz
+        # else:
+        #     L1 = self.lipschitz_method(self.solver1, self.bounds, n_samples=1000)
 
-        if self.solver2.contains_grad:
-            L2 = self.lipschitz_method_grads(self.solver2, self.bounds, n_samples=1000) # compute lipschitz
-        else:
-            L2 = self.lipschitz_method(self.solver2, self.bounds, n_samples=1000)
-
+        # if self.solver2.contains_grad:
+        #     L2 = self.lipschitz_method_grads(self.solver2, self.bounds, n_samples=1000) # compute lipschitz
+        # else:
+        #     L2 = self.lipschitz_method(self.solver2, self.bounds, n_samples=1000)
+        L1 = self.lipschitz_method_grads(self.solver1, self.var_bounds, n_samples=1000)
+        L2 = self.lipschitz_method_grads(self.solver2, self.var_bounds, n_samples=1000)
         # convert bounds from dictionary to tensors
-        x_lower = torch.tensor([
-            self.bounds['u'][0],
-            self.bounds['v'][0],
-            self.bounds['t'][0]
-        ], dtype=torch.float32).unsqueeze(0)  # shape: (1, 3)
-        x_upper = torch.tensor([
-            self.bounds['u'][1],
-            self.bounds['v'][1],
-            self.bounds['t'][1]
-        ], dtype=torch.float32).unsqueeze(0)  # shape: (1, 3)
+        x_lower = torch.tensor([self.var_bounds[k][0] for k in input_order], dtype=torch.float32).unsqueeze(0) 
+        x_upper = torch.tensor([self.var_bounds[k][1] for k in input_order], dtype=torch.float32).unsqueeze(0) 
+        # x_upper = torch.tensor([
+        #     self.bounds['u'][1],
+        #     self.bounds['v'][1],
+        #     self.bounds['t'][1]
+        # ], dtype=torch.float32).unsqueeze(0)  # shape: (1, 3)
 
         # Evaluating both solvers at x_lower
         y1 = self.solver1(x_lower)  # shape: (1, 2)
@@ -66,42 +68,61 @@ class verifier(nn.Module):
         #raise NotImplementedError("Subclasses must implement this method.")
     
     def lipschitz_method_grads(self, solver, bounds, n_samples=1000):
-        # Generate samples [u0, v0, t]
-        bounds = torch.tensor(list(bounds.values()))
-        bounds_for_sampling = list(map(tuple, bounds.tolist()))
-        samples = sampling_domain(bounds_for_sampling, num_points=5)  # this creates a large number of samples, exponential
-        # samples = generate_samples(bounds, n_samples, method='uniform')  # shape (n_samples, 3)
-        samples_tensor = torch.tensor(samples, dtype=torch.float32, requires_grad=True)
-        max_norm = 0.0
-        for sample in samples_tensor:
-            preds = solver(sample)  # forward pass
-            u0, v0, t = sample
-            # Compute state predictions: u = u0 + A*t, v = v0 + B*t
-            u_pred = u0 + preds[0] * t
-            v_pred = v0 + preds[1] * t
-            outputs = torch.cat([u_pred.reshape(1), v_pred.reshape(1)])
+        var_names = [k for k in bounds.keys() if k != 't']
+        input_order = ['t'] + var_names
+        n_inputs = len(input_order)
+
+        min_bounds = torch.tensor([bounds[k][0] for k in input_order], dtype=torch.float32)
+        max_bounds = torch.tensor([bounds[k][1] for k in input_order], dtype=torch.float32)
+
+        samples_list = generate_samples(bounds, N=n_samples, method='random')
+        samples = torch.tensor(np.array(samples_list), dtype=torch.float32)
+
+        solver.eval()
+        jacobians = vmap(jacrev(solver))(samples)
+
+        singular_values = torch.linalg.svdvals(jacobians)
+        spectral_norms = singular_values[:, 0] # Shape: (n_samples,)
+        lipschitz_estimate = torch.max(spectral_norms).item()
+        return lipschitz_estimate
+
+        '''following was to test only u,v,t case'''
+        # # Generate samples [u0, v0, t]
+        # bounds = torch.tensor(list(bounds.values()))
+        # bounds_for_sampling = list(map(tuple, bounds.tolist()))
+        # samples = sampling_domain(bounds_for_sampling, num_points=5)  # this creates a large number of samples, exponential
+        # # samples = generate_samples(bounds, n_samples, method='uniform')  # shape (n_samples, 3)
+        # samples_tensor = torch.tensor(samples, dtype=torch.float32, requires_grad=True)
+        # max_norm = 0.0
+        # for sample in samples_tensor:
+        #     preds = solver(sample)  # forward pass
+        #     u0, v0, t = sample
+        #     # Compute state predictions: u = u0 + A*t, v = v0 + B*t
+        #     u_pred = u0 + preds[0] * t
+        #     v_pred = v0 + preds[1] * t
+        #     outputs = torch.cat([u_pred.reshape(1), v_pred.reshape(1)])
             
-            # Compute Jacobian: d(outputs)/d(inputs)
-            jacobian = torch.zeros(2, 3)  # 2 outputs, 3 inputs
-            for i in range(2):
-                # Retain graph for second output
-                retain = i < 1
-                grad_outputs = torch.zeros(2)
-                grad_outputs[i] = 1.0
-                gradients = torch.autograd.grad(
-                    outputs, sample, grad_outputs=grad_outputs,
-                    retain_graph=retain, create_graph=False
-                )[0]
-                jacobian[i] = gradients
+        #     # Compute Jacobian: d(outputs)/d(inputs)
+        #     jacobian = torch.zeros(2, 3)  # 2 outputs, 3 inputs
+        #     for i in range(2):
+        #         # Retain graph for second output
+        #         retain = i < 1
+        #         grad_outputs = torch.zeros(2)
+        #         grad_outputs[i] = 1.0
+        #         gradients = torch.autograd.grad(
+        #             outputs, sample, grad_outputs=grad_outputs,
+        #             retain_graph=retain, create_graph=False
+        #         )[0]
+        #         jacobian[i] = gradients
             
-            # Compute spectral norm
-            jac_np = jacobian.detach().numpy()
-            _, s, _ = svd(jac_np)
-            spectral_norm = max(s)
-            if spectral_norm > max_norm:
-                max_norm = spectral_norm
+        #     # Compute spectral norm
+        #     jac_np = jacobian.detach().numpy()
+        #     _, s, _ = svd(jac_np)
+        #     spectral_norm = max(s)
+        #     if spectral_norm > max_norm:
+        #         max_norm = spectral_norm
         
-        return max_norm
+        # return max_norm
     
     def lipschitz_method(self, bounds, n_samples=1000, eps=1e-5, model=None):
         # Generate samples [u0, v0, t]
@@ -171,8 +192,54 @@ class verifier(nn.Module):
         
         return max_norm
     
-    def gradient_attack(self): 
-        return 
+    def gradient_attack(self, solver1, solver2, bounds, num_steps=100, learning_rate=0.01, num_restarts=10):
+        var_names = [k for k in bounds.keys() if k != 't']
+        input_order = ['t'] + var_names
+
+        # Creating tensors for min and max bounds for efficient clamping
+        min_bounds_tensor = torch.tensor([bounds[k][0] for k in input_order], dtype=torch.float32)
+        max_bounds_tensor = torch.tensor([bounds[k][1] for k in input_order], dtype=torch.float32)
+
+        max_error_found = -1.0
+        worst_input_found = None
+
+        for i in range(num_restarts):
+            x = min_bounds_tensor + (max_bounds_tensor - min_bounds_tensor) * torch.rand(1, len(input_order))  # random tensor within bounds
+            x.requires_grad = True
+
+            for _ in range(num_steps):
+                solver1.eval()
+                solver2.eval()
+
+                if x.grad is not None:
+                    x.grad.zero_()
+
+                # Getting the outputs from both models for the current input x
+                output1 = solver1(x)
+                output2 = solver2(x)
+
+                error = torch.norm(output1 - output2, p=2)  # L2 norm (Euclidean distance) between outputs, to be maximised
+
+                error.backward()  #gradient of the error with respect to the input x
+
+                # Gradient Ascent step in direction of the grad to maximise the error
+                with torch.no_grad():
+                    x += learning_rate * x.grad
+                    x.data = torch.max(torch.min(x.data, max_bounds_tensor), min_bounds_tensor)  # Project the updated input back into the valid bounds (clamping)
+            
+            # Final error for this starting point
+            final_error = torch.norm(solver1(x) - solver2(x), p=2).item()
+
+            # Updating the overall worst-case error found so far
+            if final_error > max_error_found:
+                max_error_found = final_error
+                worst_input_found = x.detach().clone()
+                print(f"  Restart {i+1}/{num_restarts}: New max error found: {max_error_found:.6f}")
+
+        return max_error_found, worst_input_found
+
+
+
         
     def every_call_counts(self): #https://github.com/fouratifares/ECP
         return

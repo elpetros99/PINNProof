@@ -61,36 +61,36 @@ def generate_samples(bounds: dict, N: int, method: str = 'random'):
     return samples
 
 
-def local_lipschitz_via_jacobian(model: nn.Module, x0: torch.Tensor) -> torch.Tensor:
-    """
-    Computes the local Lipschitz constant at x0 by:
-      1) Forwarding x0 through `model` to get y = f(x0).
-      2) Using JacobianOP.apply(y, x0) to obtain J ∈ ℝ^{out_dim × in_dim}.
-      3) Returning σ_max(J), the largest singular value of J (i.e. operator norm).
+# def local_lipschitz_via_jacobian(model: nn.Module, x0: torch.Tensor) -> torch.Tensor:
+#     """
+#     Computes the local Lipschitz constant at x0 by:
+#       1) Forwarding x0 through `model` to get y = f(x0).
+#       2) Using JacobianOP.apply(y, x0) to obtain J ∈ ℝ^{out_dim × in_dim}.
+#       3) Returning σ_max(J), the largest singular value of J (i.e. operator norm).
 
-    Args:
-        model:  A PyTorch nn.Module (any architecture).
-        x0:     A single input tensor of shape [1, in_dim], with requires_grad=True.
+#     Args:
+#         model:  A PyTorch nn.Module (any architecture).
+#         x0:     A single input tensor of shape [1, in_dim], with requires_grad=True.
 
-    Returns:
-        A tensor of shape [1], containing σ_max(J_f(x0)).  This is the local Lipschitz
-        (ℓ₂→ℓ₂) at x0.
-    """
-    # 1) Forward to get output y.  Ensure x0.requires_grad=True.
-    y = model(x0)  # y.shape = [1, out_dim]
+#     Returns:
+#         A tensor of shape [1], containing σ_max(J_f(x0)).  This is the local Lipschitz
+#         (ℓ₂→ℓ₂) at x0.
+#     """
+#     # 1) Forward to get output y.  Ensure x0.requires_grad=True.
+#     y = model(x0)  # y.shape = [1, out_dim]
 
-    # 2) Compute the full Jacobian J of shape [1, out_dim, in_dim]
-    J_full = JacobianOP.apply(y, x0)  # shape = [batch=1, out_dim, in_dim]
+#     # 2) Compute the full Jacobian J of shape [1, out_dim, in_dim]
+#     J_full = JacobianOP.apply(y, x0)  # shape = [batch=1, out_dim, in_dim]
 
-    # 3) Slice off the batch dimension:
-    J = J_full[0]  # shape = [out_dim, in_dim]
+#     # 3) Slice off the batch dimension:
+#     J = J_full[0]  # shape = [out_dim, in_dim]
 
-    # 4) Compute singular values of J, pick the largest:
-    #    torch.linalg.svdvals returns a 1‐D tensor of singular values in descending order.
-    s_vals = torch.linalg.svdvals(J)  # shape = [min(out_dim, in_dim)]
-    sigma_max = s_vals[0]             # largest singular value
+#     # 4) Compute singular values of J, pick the largest:
+#     #    torch.linalg.svdvals returns a 1‐D tensor of singular values in descending order.
+#     s_vals = torch.linalg.svdvals(J)  # shape = [min(out_dim, in_dim)]
+#     sigma_max = s_vals[0]             # largest singular value
 
-    return sigma_max.unsqueeze(0)     # return as shape [1]
+#     return sigma_max.unsqueeze(0)     # return as shape [1]
 
 # -------------------------
 # Example usage:
@@ -121,8 +121,8 @@ if __name__ == "__main__":
     x0 = torch.randn(1, in_dim, requires_grad=True)
 
     # 4) Compute local Lipschitz at x0:
-    L_local = local_lipschitz_via_jacobian(model, x0)
-    print(f"Local Lipschitz at x0 (σ_max of J) = {L_local.item():.6f}")
+    #L_local = local_lipschitz_via_jacobian(model, x0)
+    #print(f"Local Lipschitz at x0 (σ_max of J) = {L_local.item():.6f}")
 
 # def find_lipchitz_NN_autolirpa(NN):
 #     class JVPWrapper(nn.Module):
