@@ -3,6 +3,9 @@ import torch.nn as nn
 from verification.utils import *
 import numpy as np
 from torch.func import vmap, jacrev
+import sys
+sys.path.append("D:\Internship\DTU Copenhagen (summer 2025)\PINNProof")
+from external_lib.ECP.optimizers.ECP import ECP 
 
 class verifier(nn.Module):
     """
@@ -124,7 +127,7 @@ class verifier(nn.Module):
         
         # return max_norm
     
-    def lipschitz_method(self, bounds, n_samples=1000, eps=1e-5, model=None):
+    def lipschitz_method(self, bounds, n_samples=1000, eps=1e-5, model=None):  # this is not to be considered now, only consider the grads lipschitz function
         # Generate samples [u0, v0, t]
 
         bounds = torch.tensor(list(bounds.values()))
@@ -241,8 +244,34 @@ class verifier(nn.Module):
 
 
         
-    def every_call_counts(self): #https://github.com/fouratifares/ECP
-        return
+    def every_call_counts(self, solver1, solver2, bounds, num_steps=100): #https://github.com/fouratifares/ECP
+        class optimisation_function_ECP:
+            def __init__(self, model1, model2, bounds) -> None:
+                self.bounds = np.array(list(bounds.values()))
+                self.dimensions = len(bounds)  # should be the total number of input variables
+                self.model1 = model1
+                self.model2 = model2
+            def __call__(self, x: np.ndarray = None) -> float:
+                # if x is not None:
+                #     # Handle input as a numpy array
+                #     if len(x) != self.dimensions:
+                #         raise ValueError(f"Input must have {self.dimensions} dimensions.")
+
+                # Function
+                # reward = 20 * np.exp(-0.2 * np.sqrt(0.5 * ((x[0] + 1) ** 2 + (x[1] + 1) ** 2))) + np.exp(
+                #     0.5 * (np.cos(2 * np.pi * (x[0] + 1)) + np.cos(2 * np.pi * (x[1] + 1)))) - np.exp(1) - 20
+                out1 = self.model1(torch.tensor(x, dtype=torch.float32))
+                out2 = self.model2(torch.tensor(x, dtype=torch.float32))
+                reward = torch.norm(out1 - out2).item()
+                return reward
+            
+        f = optimisation_function_ECP(solver1, solver2, bounds)  # note that bounds_for_sampling has t at the end, for now this is just to check if the function works
+        points, values, epsilons = ECP(f, n=num_steps)
+        
+        max_error_found = max(values)
+        worst_input_found = points[np.argmax(values)]
+        
+        return max_error_found, worst_input_found
 
     def calculate_NTK(self): # petros work
         return
