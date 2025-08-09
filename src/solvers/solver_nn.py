@@ -3,8 +3,8 @@ import torch
 import torch.nn as nn
 import numpy as np
 import random
-from solvers.solver import Solver
-from verification.utils import *
+from src.solvers.solver import Solver
+from src.verification.utils import *
 
 class Solver_NN(Solver):
     """

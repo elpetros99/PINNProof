@@ -9,7 +9,7 @@ from torchdiffeq import odeint
 import random
 from pyDOE import lhs
 import os
-from solvers.solver import Solver
+from src.solvers.solver import Solver
 #import solver.solver as solver
 
 class ODE_conventional(Solver):

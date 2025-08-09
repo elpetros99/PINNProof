@@ -1,6 +1,6 @@
 import torch 
 import torch.nn as nn 
-from verification.utils import *
+from src.verification.utils import *
 import numpy as np
 from torch.func import vmap, jacrev
 import sys
@@ -248,6 +248,7 @@ class verifier(nn.Module):
         class optimisation_function_ECP:
             def __init__(self, model1, model2, bounds) -> None:
                 self.bounds = np.array(list(bounds.values()))
+                self.bounds = np.roll(self.bounds, shift=1, axis=0)
                 self.dimensions = len(bounds)  # should be the total number of input variables
                 self.model1 = model1
                 self.model2 = model2

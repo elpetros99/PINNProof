@@ -11,7 +11,7 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 from scipy.integrate import odeint  # not used directly but kept for consistency
 import torchode
-import solver.solver as solver
+import src.solvers.solver as solver
 
 class GeneralTorchODESolver(solver):
     """
