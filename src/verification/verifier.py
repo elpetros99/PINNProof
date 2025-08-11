@@ -4,7 +4,7 @@ from src.verification.utils import *
 import numpy as np
 from torch.func import vmap, jacrev
 import sys
-sys.path.append("D:\Internship\DTU Copenhagen (summer 2025)\PINNProof")
+# sys.path.append("D:\Internship\DTU Copenhagen (summer 2025)\PINNProof")
 from external_lib.ECP.optimizers.ECP import ECP 
 
 class verifier(nn.Module):
