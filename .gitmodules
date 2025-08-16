@@ -1,0 +1,3 @@
+[submodule "external_lib/ECP"]
+	path = external_lib/ECP
+	url = https://github.com/fouratifares/ECP.git
