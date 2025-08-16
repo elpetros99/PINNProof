@@ -311,140 +311,196 @@ class Solver_NN(Solver):
         return t_array, Y    
         
     
-    # def compute_residuals(self, bounds, num_trajectories, num_points):
-    #     """
-    #     Compute residuals dy/dt - f(y, t) using autograd and the known equations which we have inside func.
-
-    #     Args:
-    #         bounds: for now, assuming this to be a dictionary with keys 'u', 'v', 't', each mapping to (lower, upper)
-    #         num_trajectories: int, number of different initial conditions
-    #         num_points: int, number of time points per trajectory
-
-    #     Returns:
-    #         residuals: torch.Tensor of shape (num_trajectories, num_timepoints, 2)
-    #     """
-    #     var_names = [k for k in bounds.keys() if k != 't']
-    #     n_vars = len(var_names)
-
-    #     # Generate batched samples
-    #     y0s, t_grid = self.generate_batched_samples(bounds, var_names, num_trajectories, num_points)
-    #     t_grid.requires_grad_(True)
-
-    #     t_vec = t_grid.reshape(-1, 1)
-    #     y0s_vec = y0s.repeat_interleave(num_points, dim=0)   # Repeat initial conditions for each time point: (N, n_vars) -> (N * T, n_vars)
-
-    #     # Concatenate to form the model input of shape (Num_trajectories * num_points, n_vars + 1)
-    #     model_input = torch.cat([t_vec, y0s_vec], dim=1)
-
-    #     self.model.eval()
-    #     y_pred = self.model(model_input)
-
-    #     # y_pred = y0s_vec + model_output * t_vec  # if model is to give indirect output, not considered now
-
-    #     # Compute dy/dt for all points at once.
-    #     dy_dt_vec = torch.autograd.grad(
-    #         outputs=y_pred,
-    #         inputs=t_vec,
-    #         grad_outputs=torch.ones_like(y_pred),
-    #         create_graph=True
-    #     )[0]
-    #     # dy_dt_vec will have shape (N * T, n_vars)
-
-    #     # Get the initial conditions for the last 3 variables.
-    #     y0s_control = y0s_vec[:, self.n_states:] # Shape: (N * T, 3)
-    #     y_full = torch.cat([y_pred, y0s_control], dim=1) # Shape: (N * T, 7) for the actual func function
-        
-    #     f_val_list = []
-    #     for i in range(y_full.shape[0]):
-    #         # Get the i-th state vector (shape 7,) and i-th time value
-    #         y = y_full[i]
-    #         t = t_vec[i]
-        
-    #         f = self.func(t, y) # Returns a tensor of shape (7,)
-    #         f_val_list.append(f)
-        
-    #     f_val_full = torch.stack(f_val_list, dim=0)   
-
-    #     # f_val_full = self.func(t_vec, y_full)  # this can be used if func is vectorised
-    #     f_val_pred = f_val_full[:, :self.n_states]
-
-    #     residuals_vec = dy_dt_vec - f_val_pred
-
-    #     residuals = residuals_vec.view(num_trajectories, num_points, self.n_states)   # reshaping as required
-    
-    #     return residuals
     def compute_residuals(self, bounds, num_trajectories, num_points):
         """
-        Residuals: dy/dt - f(t, y) for the 6th-order SM with 2 exogenous inputs (V_t, theta_vs).
-        Returns: (num_trajectories, num_points, self.n_states)
+        Compute residuals dy/dt - f(y, t) using autograd and the known equations which we have inside func.
+
+        Args:
+            bounds: for now, assuming this to be a dictionary with keys 'u', 'v', 't', each mapping to (lower, upper)
+            num_trajectories: int, number of different initial conditions
+            num_points: int, number of time points per trajectory
+
+        Returns:
+            residuals: torch.Tensor of shape (num_trajectories, num_timepoints, 2)
         """
-        # --- order of variables must match the model's training order ---
-        var_names = [k for k in bounds.keys() if k != 't']  # ['delta','omega','E_d_dash','E_q_dash','E_q_dd','E_d_dd','V_t','theta_vs']
+        var_names = [k for k in bounds.keys() if k != 't']
+        n_vars = len(var_names)
+
+        # Generate batched samples
         y0s, t_grid = self.generate_batched_samples(bounds, var_names, num_trajectories, num_points)
+        t_grid.requires_grad_(True)
 
-        # device
-        device = next(self.model.parameters()).device
-        y0s   = y0s.to(device)
-        t_grid= t_grid.to(device)
+        t_vec = t_grid.reshape(-1, 1)
+        y0s_vec = y0s.repeat_interleave(num_points, dim=0)   # Repeat initial conditions for each time point: (N, n_vars) -> (N * T, n_vars)
 
-        # flatten time and enable grads wrt t
-        t_vec = t_grid.reshape(-1, 1).clone().detach().requires_grad_(True)          # (N*T,1)
-        # repeat ICs for each time point
-        y0s_vec = y0s.repeat_interleave(num_points, dim=0)                            # (N*T, 8)
+        # Concatenate to form the model input of shape (Num_trajectories * num_points, n_vars + 1)
+        model_input = torch.cat([t_vec, y0s_vec], dim=1)
 
-        # split into states (first 6) and controls (last 2)
-        y0_states_vec = y0s_vec[:, :self.n_states]                                    # (N*T, 6)
-        y0_ctrl_vec   = y0s_vec[:, self.n_states:]                                    # (N*T, 2)
-
-        # model input: SAME as in your solve(): [y0(8), t]
-        model_input = torch.cat([y0s_vec, t_vec], dim=1)                              # (N*T, 9)
-
-        # forward pass (keep graph! we need grads wrt t)
         self.model.eval()
-        net_out = self.model(model_input)                                             # (N*T, 6)
+        y_pred = self.model(model_input)
 
-        # reconstruct the trajectory y_hat used in physics
-        # if getattr(self, "outputs_are_slopes", False):
-        #     # y(t) = y0 + slope * t
-        #     y_hat = y0_states_vec + net_out * t_vec
-        # else:
-            # network outputs states directly
-        y_hat = net_out                                                           # (N*T, 6)
+        # y_pred = y0s_vec + model_output * t_vec  # if model is to give indirect output, not considered now
 
-        # per-state time derivatives dy/dt
-        grads = []
-        for k in range(self.n_states):
-            gk = torch.autograd.grad(
-                outputs=y_hat[:, k:k+1],
-                inputs=t_vec,
-                grad_outputs=torch.ones_like(t_vec),
-                create_graph=True,
-                retain_graph=(k < self.n_states - 1)
-            )[0]                                                                      # (N*T,1)
-            grads.append(gk)
-        dy_dt = torch.cat(grads, dim=1)                                               # (N*T, 6)
+        # Compute dy/dt for all points at once.
+        dy_dt_vec = torch.autograd.grad(
+            outputs=y_pred,
+            inputs=t_vec,
+            grad_outputs=torch.ones_like(y_pred),
+            create_graph=True, retain_graph=True,
+        )[0]
+        # dy_dt_vec will have shape (N * T, n_vars)
 
-        # build full 8-dim state to evaluate RHS: [y_hat(6), controls(2)]
-        # we don't need grads through f, so detach to save memory
-        y_hat_det = y_hat.detach()
-        y_full = torch.cat([y_hat_det, y0_ctrl_vec.detach()], dim=1)                  # (N*T, 8)
+        # Get the initial conditions for the last 3 variables.
+        y0s_control = y0s_vec[:, self.n_states:] # Shape: (N * T, 3)
+        y_full = torch.cat([y_pred, y0s_control], dim=1) # Shape: (N * T, 7) for the actual func function
+        
+        f_val_list = []
+        for i in range(y_full.shape[0]):
+            # Get the i-th state vector (shape 7,) and i-th time value
+            y = y_full[i]
+            t = t_vec[i]
+        
+            f = self.func(t, y) # Returns a tensor of shape (7,)
+            f_val_list.append(f)
+        
+        f_val_full = torch.stack(f_val_list, dim=0)   
 
-        # evaluate RHS f(t, y) using your machine.forward signature
-        f_list = []
-        with torch.no_grad():
-            for i in range(y_full.shape[0]):
-                ti = t_vec[i, 0]
-                fi = self.func(ti, y_full[i])                                         # (8,)
-                f_list.append(fi)
-        f_full = torch.stack(f_list, dim=0).to(dy_dt.dtype).to(device)                # (N*T, 8)
+        # f_val_full = self.func(t_vec, y_full)  # this can be used if func is vectorised
+        f_val_pred = f_val_full[:, :self.n_states]
 
-        # keep only the first 6 derivatives (the last 2 are zeros for V_t, theta_vs)
-        f_val = f_full[:, :self.n_states]                                             # (N*T, 6)
+        residuals_vec = dy_dt_vec - f_val_pred
 
-        # residuals and reshape
-        residuals_vec = dy_dt - f_val                                                 # (N*T, 6)
-        residuals = residuals_vec.view(num_trajectories, num_points, self.n_states)
+        residuals = residuals_vec.view(num_trajectories, num_points, self.n_states)   # reshaping as required
+    
         return residuals
+    # def compute_residuals(self, bounds, num_trajectories, num_points):
+    #     """
+    #     Compute PINN residuals r(t) = dy/dt - f(t, y) for a 6th-order SM with 2 controls (V_t, theta_vs).
+    #     Returns: (num_trajectories, num_points, self.n_states)
+    #     """
+    #     import torch
+
+    #     # ---- explicit variable order (match training) ----
+    #     var_order = ['delta','omega','E_d_dash','E_q_dash','E_q_dd','E_d_dd','V_t','theta_vs']
+
+    #     # Samples: y0s shape (N, 8), t_grid shape (N, T, 1)
+    #     y0s, t_grid = self.generate_batched_samples(bounds, var_order, num_trajectories, num_points)
+
+    #     device = next(self.model.parameters()).device
+    #     dtype  = next(self.model.parameters()).dtype
+    #     y0s, t_grid = y0s.to(device=device, dtype=dtype), t_grid.to(device=device, dtype=dtype)
+
+    #     # Flatten time and repeat ICs
+    #     t_vec     = t_grid.reshape(-1, 1).detach().requires_grad_(True)        # (N*T, 1)
+    #     y0s_vec   = y0s.repeat_interleave(num_points, dim=0)                   # (N*T, 8)
+    #     y0_ctrl   = y0s_vec[:, self.n_states:]                                 # (N*T, 2)
+
+    #     # Model input: [y0(8), t]
+    #     model_in  = torch.cat([y0s_vec, t_vec], dim=1)                          # (N*T, 9)
+
+    #     # Predict states y_hat(t)
+    #     self.model.eval()
+    #     y_hat = self.model(model_in)                                            # (N*T, 6)
+
+    #     # Time derivatives dy/dt via autograd wrt t
+    #     dy_dt = torch.cat([
+    #         torch.autograd.grad(
+    #             y_hat[:, k:k+1], t_vec,
+    #             grad_outputs=torch.ones_like(y_hat[:, k:k+1]),
+    #             create_graph=True,
+    #             retain_graph=(k < self.n_states - 1)
+    #         )[0]
+    #         for k in range(self.n_states)
+    #     ], dim=1)                                                               # (N*T, 6)
+
+    #     # Full state for RHS f(t, y)
+    #     y_full = torch.cat([y_hat, y0_ctrl], dim=1)                             # (N*T, 8)
+
+    #     # Evaluate RHS; prefer batched func(t, y) -> (N*T, 8)
+    #     try:
+    #         f_full = self.func(t_vec.squeeze(1), y_full)                        # (N*T, 8)
+    #     except TypeError:
+    #         # fallback: unbatched loop if func isn't vectorized
+    #         f_full = torch.stack([self.func(t_vec[i, 0], y_full[i]) for i in range(y_full.shape[0])], dim=0)
+
+    #     f_val = f_full[:, :self.n_states]                                       # (N*T, 6)
+
+    #     # Residuals
+    #     residuals = (dy_dt - f_val).view(num_trajectories, num_points, self.n_states)
+    #     return residuals
+
+    # def compute_residuals(self, bounds, num_trajectories, num_points):
+    #     """
+    #     Residuals: dy/dt - f(t, y) for the 6th-order SM with 2 exogenous inputs (V_t, theta_vs).
+    #     Returns: (num_trajectories, num_points, self.n_states)
+    #     """
+    #     # --- order of variables must match the model's training order ---
+    #     var_names = [k for k in bounds.keys() if k != 't']  # ['delta','omega','E_d_dash','E_q_dash','E_q_dd','E_d_dd','V_t','theta_vs']
+    #     y0s, t_grid = self.generate_batched_samples(bounds, var_names, num_trajectories, num_points)
+
+    #     # device
+    #     device = next(self.model.parameters()).device
+    #     y0s   = y0s.to(device)
+    #     t_grid= t_grid.to(device)
+
+    #     # flatten time and enable grads wrt t
+    #     t_vec = t_grid.reshape(-1, 1).clone().detach().requires_grad_(True)          # (N*T,1)
+    #     # repeat ICs for each time point
+    #     y0s_vec = y0s.repeat_interleave(num_points, dim=0)                            # (N*T, 8)
+
+    #     # split into states (first 6) and controls (last 2)
+    #     y0_states_vec = y0s_vec[:, :self.n_states]                                    # (N*T, 6)
+    #     y0_ctrl_vec   = y0s_vec[:, self.n_states:]                                    # (N*T, 2)
+
+    #     # model input: SAME as in your solve(): [y0(8), t]
+    #     model_input = torch.cat([y0s_vec, t_vec], dim=1)                              # (N*T, 9)
+
+    #     # forward pass (keep graph! we need grads wrt t)
+    #     self.model.eval()
+    #     net_out = self.model(model_input)                                             # (N*T, 6)
+
+    #     # reconstruct the trajectory y_hat used in physics
+    #     # if getattr(self, "outputs_are_slopes", False):
+    #     #     # y(t) = y0 + slope * t
+    #     #     y_hat = y0_states_vec + net_out * t_vec
+    #     # else:
+    #         # network outputs states directly
+    #     y_hat = net_out                                                           # (N*T, 6)
+
+    #     # per-state time derivatives dy/dt
+    #     grads = []
+    #     for k in range(self.n_states):
+    #         gk = torch.autograd.grad(
+    #             outputs=y_hat[:, k:k+1],
+    #             inputs=t_vec,
+    #             grad_outputs=torch.ones_like(t_vec),
+    #             create_graph=True,
+    #             retain_graph=(k < self.n_states - 1)
+    #         )[0]                                                                      # (N*T,1)
+    #         grads.append(gk)
+    #     dy_dt = torch.cat(grads, dim=1)                                               # (N*T, 6)
+
+    #     # build full 8-dim state to evaluate RHS: [y_hat(6), controls(2)]
+    #     # we don't need grads through f, so detach to save memory
+    #     y_hat_det = y_hat.detach()
+    #     y_full = torch.cat([y_hat_det, y0_ctrl_vec.detach()], dim=1)                  # (N*T, 8)
+
+    #     # evaluate RHS f(t, y) using your machine.forward signature
+    #     f_list = []
+    #     with torch.no_grad():
+    #         for i in range(y_full.shape[0]):
+    #             ti = t_vec[i, 0]
+    #             fi = self.func(ti, y_full[i])                                         # (8,)
+    #             f_list.append(fi)
+    #     f_full = torch.stack(f_list, dim=0).to(dy_dt.dtype).to(device)                # (N*T, 8)
+
+    #     # keep only the first 6 derivatives (the last 2 are zeros for V_t, theta_vs)
+    #     f_val = f_full[:, :self.n_states]                                             # (N*T, 6)
+
+    #     # residuals and reshape
+    #     residuals_vec = dy_dt - f_val                                                 # (N*T, 6)
+    #     residuals = residuals_vec.view(num_trajectories, num_points, self.n_states)
+    #     return residuals
 
     def pinn_residual_heatmaps_by_state_y(
         solver,                    # your Solver_NN (needs .model, .func, .n_states, .generate_batched_samples)
