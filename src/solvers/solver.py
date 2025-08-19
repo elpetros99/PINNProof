@@ -226,20 +226,14 @@ class Solver():
         ic_lambda: float = 0.1,         # strength of IC spacing bonus
         transient_weight: float = 1.0,  # 0=uniform, >0 emphasizes later times
         dup_tol: float = 1e-3,          # reject if trajectory MSE < dup_tol vs any existing
-        optimizer: str = "lbfgs",       # "lbfgs" | "adam" | "hybrid"
-        adam_warmup: int = 40,          # only used when optimizer="hybrid"
-        ode_method: str = "dopri5",
+        ode_method: str = "rk4",        # default to rk4 (fixed step) to avoid dt underflow
+        ode_rtol: float = 1e-6,         # used for adaptive methods
+        ode_atol: float = 1e-8,
     ):
         """
-        Gradient search for a novel initial condition x0.
-
-        optimizer:
-        - "lbfgs": pure LBFGS (fast convergence but each step costs multiple ODE solves)
-        - "adam": pure Adam
-        - "hybrid": Adam warm-up then short LBFGS polish
-
-        Returns:
-        x0_best [D], t_grid [T], sol_best [T,D]
+        Gradient search for a novel initial condition x0 using LBFGS.
+        Uses a robust 'safe_odeint' that falls back to fixed-step RK4 to avoid
+        'underflow in dt 0.0' during line search.
         """
         N, T, D = collected_data.shape
         mins, maxs = bounds[:, 0].to(device), bounds[:, 1].to(device)
@@ -250,36 +244,54 @@ class Solver():
         collected_norm = (collected_data.to(device) / scale)    # [N,T,D]
         collected_flat = collected_norm.reshape(N, -1)          # [N, T*D]
 
-        # emphasize transients if requested
+        # time weights (emphasize transients)
         if transient_weight != 0.0:
             w = torch.linspace(1.0, 1.0 + transient_weight, num_points, device=device)
         else:
             w = torch.ones(num_points, device=device)
+
+        # step size for RK4 so that the grid aligns with t_grid
+        rk4_step = float(t_final) / max(1, (num_points - 1))
 
         def flatten_weighted(sol):  # sol: [T,D]
             soln = (sol / scale) * w.view(-1, 1)
             return soln.reshape(-1)  # [T*D]
 
         def softmin_dist(traj_flat):
-            # far from nearest existing trajectory (soft-min of squared distances)
             diffs = collected_flat - traj_flat.unsqueeze(0)     # [N, L]
             sqd = torch.sum(diffs * diffs, dim=1)               # [N]
             return -(1.0 / alpha) * torch.logsumexp(-alpha * sqd, dim=0)
 
+        # robust ODE solve (avoid dt underflow)
+        def safe_odeint(x0):
+            f = lambda t, y: self.func(t, y, *self.args)
+            # try requested method first
+            try:
+                if ode_method.lower() in ("rk4", "euler"):
+                    return odeint(f, x0, t_grid, method="rk4", options={"step_size": rk4_step})
+                else:
+                    return odeint(f, x0, t_grid, method=ode_method, rtol=ode_rtol, atol=ode_atol)
+            except Exception:
+                # fallback to BDF (stiff)
+                try:
+                    return odeint(f, x0, t_grid, method="bdf", rtol=ode_rtol, atol=ode_atol)
+                except Exception:
+                    # final fallback: fixed-step RK4
+                    return odeint(f, x0, t_grid, method="rk4", options={"step_size": rk4_step})
+
         best_score, best_x0, best_sol = None, None, None
 
-        for r in range(restarts):
-            # ----- random restart on unconstrained variable u (mapped to box via sigmoid) -----
+        for _ in range(restarts):
+            # random restart on unconstrained variable u (mapped to box via sigmoid)
             with torch.no_grad():
                 z0 = torch.rand(D, device=device).clamp(1e-4, 1 - 1e-4)
                 u = torch.log(z0) - torch.log1p(-z0)            # logit
             u.requires_grad_(True)
 
-            # ----- define a closure factory so we can reuse for LBFGS or Adam -----
             def compute_loss_and_score():
                 x0 = mins + (maxs - mins) * torch.sigmoid(u)    # [D]
-                sol = odeint(lambda t, y: self.func(t, y, *self.args),
-                            x0, t_grid, method=ode_method)
+                # solve ODE robustly
+                sol = safe_odeint(x0)
                 traj_flat = flatten_weighted(sol)
 
                 score = softmin_dist(traj_flat)                 # novelty in trajectory space
@@ -290,82 +302,42 @@ class Solver():
                     ic_min = (diffs_ic * diffs_ic).sum(1).min()
                     score = score + ic_lambda * ic_min
 
-                loss = -score                                    # we minimize in optimizers
+                loss = -score                                    # LBFGS minimizes
                 return loss, score, x0, sol
 
-            # ----- optimize u -----
-            if optimizer == "adam":
-                opt = torch.optim.Adam([u], lr=lr)
-                sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-                    opt, T_max=max(steps, 10), eta_min=lr * 0.05
-                )
-                for _ in range(steps):
-                    opt.zero_grad(set_to_none=True)
+            # ---- LBFGS optimize u ----
+            opt = torch.optim.LBFGS(
+                [u], lr=lr, max_iter=steps, max_eval=steps * 2,
+                history_size=10, line_search_fn="strong_wolfe"
+            )
+
+            def closure():
+                opt.zero_grad(set_to_none=True)
+                loss, _, _, _ = compute_loss_and_score()
+                loss.backward()
+                return loss
+
+            try:
+                opt.step(closure)
+            except RuntimeError:
+                # line search sometimes fails; just take one gradient step so we don't crash
+                with torch.enable_grad():
                     loss, _, _, _ = compute_loss_and_score()
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_([u], max_norm=5.0)
-                    opt.step()
-                    sched.step()
+                # simple fallback update
+                with torch.no_grad():
+                    u -= lr * u.grad
+                    u.grad.zero_()
 
-            elif optimizer == "lbfgs":
-                opt = torch.optim.LBFGS(
-                    [u], lr=lr, max_iter=steps, max_eval=steps * 2,
-                    history_size=10, line_search_fn="strong_wolfe"
-                )
-
-                def closure():
-                    opt.zero_grad(set_to_none=True)
-                    loss, _, _, _ = compute_loss_and_score()
-                    loss.backward()
-                    return loss
-
-                try:
-                    opt.step(closure)
-                except RuntimeError:
-                    # line search sometimes fails; evaluate once so we don't crash
-                    with torch.enable_grad():
-                        loss, _, _, _ = compute_loss_and_score()
-                        loss.backward()
-
-            elif optimizer == "hybrid":
-                # Adam warm-up
-                optA = torch.optim.Adam([u], lr=lr)
-                for _ in range(adam_warmup):
-                    optA.zero_grad(set_to_none=True)
-                    loss, _, _, _ = compute_loss_and_score()
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_([u], max_norm=5.0)
-                    optA.step()
-                # short LBFGS polish
-                optB = torch.optim.LBFGS(
-                    [u], lr=lr, max_iter=max(5, steps // 2), max_eval=steps,
-                    history_size=10, line_search_fn="strong_wolfe"
-                )
-
-                def closureB():
-                    optB.zero_grad(set_to_none=True)
-                    loss, _, _, _ = compute_loss_and_score()
-                    loss.backward()
-                    return loss
-
-                try:
-                    optB.step(closureB)
-                except RuntimeError:
-                    with torch.enable_grad():
-                        loss, _, _, _ = compute_loss_and_score()
-                        loss.backward()
-            else:
-                raise ValueError(f"Unknown optimizer: {optimizer}")
-
-            # ----- evaluate this restart -----
+            # evaluate this restart
             with torch.no_grad():
-                loss, score, x0_cand, sol_cand = compute_loss_and_score()
+                _, score, x0_cand, sol_cand = compute_loss_and_score()
 
             if (best_score is None) or (score.item() > best_score):
                 best_score = score.item()
                 best_x0, best_sol = x0_cand.detach(), sol_cand.detach()
 
-        # ----- final duplicate guard vs. collected_data -----
+        # final duplicate guard vs. collected_data
         with torch.no_grad():
             cand = (best_sol / scale).reshape(-1)
             if N > 0:
@@ -378,11 +350,11 @@ class Solver():
                 # fallback to a random point to ensure diversity
                 z = torch.rand(D, device=device)
                 x0_fb = mins + (maxs - mins) * z
-                sol_fb = odeint(lambda t, y: self.func(t, y, *self.args),
-                                x0_fb, t_grid, method=ode_method)
+                sol_fb = safe_odeint(x0_fb)
                 best_x0, best_sol = x0_fb.detach(), sol_fb.detach()
 
         return best_x0, t_grid, best_sol
+
 
     # def active_sample_initial(
     #     self, collected_data: torch.Tensor, bounds: torch.Tensor,

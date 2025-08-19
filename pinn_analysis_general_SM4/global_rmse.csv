@@ -1,0 +1,9 @@
+metric,state,value
+RMSE_residual,$\delta$,0.04044581204652786
+RMSE_error,$\delta$,0.058599021285772324
+RMSE_residual,$\omega$,1.9989728927612305
+RMSE_error,$\omega$,0.24049289524555206
+RMSE_residual,$E'_d$,0.21123719215393066
+RMSE_error,$E'_d$,0.06604178249835968
+RMSE_residual,$E'_q$,0.2524813115596771
+RMSE_error,$E'_q$,0.8407115340232849

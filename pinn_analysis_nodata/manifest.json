@@ -1,0 +1,20 @@
+{
+  "num_ic": 100,
+  "num_points": 1000,
+  "t_final": 0.2,
+  "labels6": [
+    "delta",
+    "omega",
+    "E_d_dash",
+    "E_q_dash",
+    "E_d_dd",
+    "E_q_dd"
+  ],
+  "lags": [
+    0,
+    1,
+    5,
+    10,
+    20
+  ]
+}
