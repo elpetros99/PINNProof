@@ -207,7 +207,10 @@ class verifier(nn.Module):
         worst_input_found = None
 
         for i in range(num_restarts):
-            x = min_bounds_tensor + (max_bounds_tensor - min_bounds_tensor) * torch.rand(1, len(input_order))  # random tensor within bounds
+            eps = 1e-4
+            r = torch.rand(1, len(input_order))
+            r = r.clamp(min=eps, max=1-eps)
+            x = min_bounds_tensor + (max_bounds_tensor - min_bounds_tensor) * r  # random tensor within bounds
             x.requires_grad = True
 
             for _ in range(num_steps):
@@ -266,7 +269,7 @@ class verifier(nn.Module):
                 reward = torch.norm(out1 - out2).item()
                 return reward
             
-        f = optimisation_function_ECP(solver1, solver2, bounds)  # note that bounds_for_sampling has t at the end, for now this is just to check if the function works
+        f = optimisation_function_ECP(solver1, solver2, bounds)  # note that bounds_for_sampling has t at the end, this is why it is rolled in the optimisation_function_ECP class above
         points, values, epsilons = ECP(f, n=num_steps)
         
         max_error_found = max(values)
