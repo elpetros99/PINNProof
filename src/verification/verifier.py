@@ -201,17 +201,19 @@ class verifier(nn.Module):
 
         # Creating tensors for min and max bounds for efficient clamping
         min_bounds_tensor = torch.tensor([bounds[k][0] for k in input_order], dtype=torch.float32)
+        min_bounds_tensor[0] += 1e-5   # to ensure time remains >0
         max_bounds_tensor = torch.tensor([bounds[k][1] for k in input_order], dtype=torch.float32)
 
         max_error_found = -1.0
         worst_input_found = None
 
         for i in range(num_restarts):
-            eps = 1e-4
-            r = torch.rand(1, len(input_order))
-            r = r.clamp(min=eps, max=1-eps)
-            x = min_bounds_tensor + (max_bounds_tensor - min_bounds_tensor) * r  # random tensor within bounds
+            # eps = 1e-3
+            # r = torch.rand(1, len(input_order))
+            # r = r.clamp(min=eps, max=1-eps)
+            x = min_bounds_tensor + (max_bounds_tensor - min_bounds_tensor)  # random tensor within bounds
             x.requires_grad = True
+            
 
             for _ in range(num_steps):
                 solver1.eval()
