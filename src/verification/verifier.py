@@ -3,6 +3,7 @@ import torch.nn as nn
 from src.verification.utils import *
 import numpy as np
 from torch.func import vmap, jacrev
+import math
 import sys
 # sys.path.append("D:\Internship\DTU Copenhagen (summer 2025)\PINNProof")
 from external_lib.ECP.optimizers.ECP import ECP 
@@ -278,6 +279,196 @@ class verifier(nn.Module):
         worst_input_found = points[np.argmax(values)]
         
         return max_error_found, worst_input_found
+
+
+
+    @staticmethod
+    def _make_bounds_tensors(bounds, input_order):
+        min_bounds_tensor = torch.tensor([bounds[k][0] for k in input_order], dtype=torch.float32).reshape(1, -1)
+        max_bounds_tensor = torch.tensor([bounds[k][1] for k in input_order], dtype=torch.float32).reshape(1, -1)
+        return min_bounds_tensor, max_bounds_tensor
+
+    @staticmethod
+    def _reparam(z, lower, upper):
+        # Box constraints via sigmoid: x = lower + (upper-lower)*sigmoid(z)
+        return lower + (upper - lower) * torch.sigmoid(z)
+
+    def gradient_attack_opt(
+        self,
+        solver1,
+        solver2,
+        bounds,
+        num_steps: int = 100,
+        num_restarts: int = 10,
+        optimizer: str = "sgd",           # "sgd" | "adam" | "lbfgs"
+        lr: float = 0.05,
+        sgd_momentum: float = 0.9,
+        lbfgs_max_iter: int = 20,
+        lbfgs_history_size: int = 10,
+        seed: int | None = None,
+    ):
+        """
+        Gradient-based worst-case input search using a chosen optimizer.
+        Maximizes ||solver1(x) - solver2(x)||_2 subject to x in 'bounds'.
+
+        Returns:
+            max_error_found (float), worst_input_found (tensor of shape (1, D))
+        """
+        # Input ordering matches your other methods: t first, then other variables
+        var_names = [k for k in bounds.keys() if k != 't']
+        input_order = ['t'] + var_names
+
+        if seed is not None:
+            torch.manual_seed(seed)
+            np.random.seed(seed % (2**32 - 1))
+
+        lower, upper = self._make_bounds_tensors(bounds, input_order)
+        dim = lower.shape[1]
+
+        device = next(solver1.parameters(), torch.tensor(0)).device if hasattr(solver1, 'parameters') else torch.device('cpu')
+        lower = lower.to(device)
+        upper = upper.to(device)
+
+        solver1.eval()
+        solver2.eval()
+
+        max_error_found = -math.inf
+        worst_input_found = None
+
+        for r in range(num_restarts):
+            # Optimize an unconstrained parameter z; x = box(sigmoid(z))
+            # Start z near a random point in the box
+            with torch.no_grad():
+                rand01 = torch.rand(1, dim, device=device) * 0.9998 + 0.0001
+                # inverse-sigmoid (logit) for stable init
+                z0 = torch.log(rand01) - torch.log1p(-rand01)
+            z = nn.Parameter(z0)
+
+            # Pick optimizer
+            opt_name = optimizer.lower()
+            if opt_name == "sgd":
+                opt = torch.optim.SGD([z], lr=lr, momentum=sgd_momentum)
+                def step_once():
+                    opt.zero_grad(set_to_none=True)
+                    x = self._reparam(z, lower, upper)
+                    err = torch.norm(solver1(x) - solver2(x), p=2)
+                    loss = -err  # maximize error
+                    loss.backward()
+                    opt.step()
+                    return err.detach()
+            elif opt_name == "adam":
+                opt = torch.optim.Adam([z], lr=lr)
+                def step_once():
+                    opt.zero_grad(set_to_none=True)
+                    x = self._reparam(z, lower, upper)
+                    err = torch.norm(solver1(x) - solver2(x), p=2)
+                    loss = -err
+                    loss.backward()
+                    opt.step()
+                    return err.detach()
+            elif opt_name == "lbfgs":
+                # LBFGS maximizes by minimizing -error via a closure.
+                opt = torch.optim.LBFGS(
+                    [z],
+                    lr=lr,
+                    max_iter=lbfgs_max_iter,
+                    history_size=lbfgs_history_size,
+                    line_search_fn="strong_wolfe",
+                )
+                def closure():
+                    opt.zero_grad(set_to_none=True)
+                    x = self._reparam(z, lower, upper)
+                    err = torch.norm(solver1(x) - solver2(x), p=2)
+                    loss = -err
+                    loss.backward()
+                    # Return loss for LBFGS, but stash current error for optional diagnostics
+                    return loss
+
+                def step_once():
+                    # One LBFGS "outer" step may perform several inner iterations (max_iter)
+                    loss_val = opt.step(closure)
+                    # Recompute current error for tracking
+                    with torch.no_grad():
+                        x = self._reparam(z, lower, upper)
+                        err = torch.norm(solver1(x) - solver2(x), p=2)
+                    return err.detach()
+            else:
+                raise ValueError(f"Unknown optimizer: {optimizer}. Use 'sgd', 'adam', or 'lbfgs'.")
+
+            best_err_this_restart = -math.inf
+            best_z_this_restart = None
+
+            # Run the steps
+            for _ in range(num_steps):
+                err_now = step_once()
+                if torch.isnan(err_now) or torch.isinf(err_now):
+                    # Skip pathological points
+                    continue
+                if err_now.item() > best_err_this_restart:
+                    best_err_this_restart = err_now.item()
+                    best_z_this_restart = z.detach().clone()
+
+            # Final candidate from this restart
+            if best_z_this_restart is not None:
+                x_candidate = self._reparam(best_z_this_restart, lower, upper)
+                final_err = torch.norm(solver1(x_candidate) - solver2(x_candidate), p=2).item()
+
+                if final_err > max_error_found:
+                    max_error_found = final_err
+                    worst_input_found = x_candidate.detach().clone()
+
+            print(f"[{optimizer.upper()}] restart {r+1}/{num_restarts} — best err so far: {max_error_found:.6f}")
+
+        return max_error_found, worst_input_found
+
+    def gradient_attack_all(
+        self,
+        solver1,
+        solver2,
+        bounds,
+        num_steps: int = 100,
+        num_restarts: int = 10,
+        lr_sgd: float = 0.05,
+        lr_adam: float = 0.01,
+        lr_lbfgs: float = 1.0,
+        sgd_momentum: float = 0.9,
+        lbfgs_max_iter: int = 20,
+        lbfgs_history_size: int = 10,
+        seed: int | None = None,
+    ):
+        """
+        Runs the gradient attack with SGD, Adam, and L-BFGS.
+        Returns a dict mapping optimizer name -> (max_error_found, worst_input_found).
+        """
+        results = {}
+
+        # SGD
+        results['sgd'] = self.gradient_attack_opt(
+            solver1, solver2, bounds,
+            num_steps=num_steps, num_restarts=num_restarts,
+            optimizer="sgd", lr=lr_sgd, sgd_momentum=sgd_momentum,
+            seed=seed
+        )
+
+        # Adam
+        results['adam'] = self.gradient_attack_opt(
+            solver1, solver2, bounds,
+            num_steps=num_steps, num_restarts=num_restarts,
+            optimizer="adam", lr=lr_adam,
+            seed=seed
+        )
+
+        # L-BFGS
+        results['lbfgs'] = self.gradient_attack_opt(
+            solver1, solver2, bounds,
+            num_steps=num_steps, num_restarts=num_restarts,
+            optimizer="lbfgs", lr=lr_lbfgs,
+            lbfgs_max_iter=lbfgs_max_iter, lbfgs_history_size=lbfgs_history_size,
+            seed=seed
+        )
+
+        return results
+
 
     def calculate_NTK(self): # petros work
         return
