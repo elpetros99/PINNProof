@@ -24,6 +24,8 @@ examples/python/
   verification_quickstart.py
 ```
 
+`src/pinnproof/` is the real package. The examples add `src/` to `sys.path` only so they can be run directly from a local checkout before installation.
+
 ## Quickstart
 
 Validation:
