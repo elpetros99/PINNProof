@@ -17,4 +17,4 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["pinnproof*"]
+include = ["pinnproof*", "external_lib*"]

@@ -21,17 +21,19 @@ def configure_notebook_paths(
     include_external_lib: bool = False,
     include_ecp: bool = False,
 ) -> Path:
-    """Add repo-relative import roots used by the example notebooks."""
+    """Add repo-relative import roots used by the example notebooks.
+
+    The vendored-library shims now live under ``src/external_lib``. The
+    ``include_external_lib`` and ``include_ecp`` flags are kept only for
+    backward compatibility and no longer add raw third-party directories to
+    ``sys.path``.
+    """
     repo_root = find_repo_root(start)
     candidate_paths = [
         repo_root,
         repo_root / "src",
         repo_root / "examples",
     ]
-    if include_external_lib:
-        candidate_paths.append(repo_root / "external_lib")
-    if include_ecp:
-        candidate_paths.append(repo_root / "external_lib" / "ECP")
 
     for path in candidate_paths:
         path_str = str(path)
